@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 import "log"
@@ -45,17 +46,17 @@ func Worker(
 	mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string,
 ) {
-	//log.Printf("worder-%d 上线\n", os.Getgid())
+	log.Printf("worder-%d 上线\n", os.Getgid())
 	for {
 		task, ok := CallRpcHandler(RpcTypeGetTask, -1)
 		if !ok {
-			//log.Printf("worker-%d: rpc:所有任务已完成", os.Getgid())
+			log.Printf("worker-%d: rpc:所有任务已完成", os.Getgid())
 			break
 		}
 		if task.Status == StatusFin {
 			continue
 		}
-		//log.Printf("worder-%d taskId=%d 开始处理\n", os.Getgid(), task.Id)
+		log.Printf("worder-%d taskId=%d 开始处理\n", os.Getgid(), task.Id)
 		if task.Type == TaskTypeMap {
 			handlerMap(task, mapf)
 		} else {
@@ -66,12 +67,12 @@ func Worker(
 		for time.Now().Unix()-task.StartTime < 10 {
 			_, isSuccess = CallRpcHandler(RpcTypeFinTask, task.Id)
 			if isSuccess {
-				//log.Printf("worder-%d taskId=%d 处理成功\n", os.Getgid(), task.Id)
+				log.Printf("worder-%d taskId=%d 处理成功\n", os.Getgid(), task.Id)
 				break
 			}
 		}
 		if !isSuccess {
-			//log.Printf("worder-%d taskId=%d rpc:响应过期\n", os.Getgid(), task.Id)
+			log.Printf("worder-%d taskId=%d rpc:响应过期\n", os.Getgid(), task.Id)
 		}
 	}
 }
@@ -92,13 +93,16 @@ func handlerMap(task *Task, mapf func(string, string) []KeyValue) {
 	for _, kv := range kvs {
 		hashKV[ihash(kv.Key)%task.ReduceNum] = append(hashKV[ihash(kv.Key)%task.ReduceNum], kv)
 	}
+	split := strings.Split(task.FileName[0], "/")
+	fileName := split[len(split)-1]
 	for i := 0; i < task.ReduceNum; i++ {
-		iname := "mr-tmp-" + task.FileName[0] + "-" + strconv.Itoa(i)
-		ifile, _ := os.Create(iname)
+		name := "mr-tmp-" + fileName + "-" + strconv.Itoa(i)
+		ifile, _ := os.Create(name)
 		enc := json.NewEncoder(ifile)
 		for _, kv := range hashKV[i] {
 			enc.Encode(kv)
 		}
+
 		ifile.Close()
 	}
 }
@@ -130,6 +134,7 @@ func handlerReduce(task *Task, reducef func(string, []string) string) {
 	ofile.Close()
 }
 
+// shuffle 聚合排序
 func shuffle(fileNames []string) []KeyValue {
 	var intermediate []KeyValue
 	for _, file := range fileNames {

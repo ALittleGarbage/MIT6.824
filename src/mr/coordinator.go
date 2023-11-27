@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -52,7 +53,7 @@ func (c *Coordinator) RpcHandler(req *RpcRequest, reply *RpcReply) error {
 				reply.Task = task
 				task.StartTime = time.Now().Unix()
 				c.Holder.AddBackTask(task) // 加入到过期队列中
-				//log.Printf("收到获取任务请求，taskId=%d type=%d", task.Id, task.Type)
+				log.Printf("收到获取任务请求，taskId=%d type=%d", task.Id, task.Type)
 			case _ = <-time.After(time.Millisecond * 100):
 			}
 			if reply.Task != nil {
@@ -61,7 +62,7 @@ func (c *Coordinator) RpcHandler(req *RpcRequest, reply *RpcReply) error {
 		}
 		if req.Type == RpcTypeFinTask {
 			c.Holder.FinTask(req.TaskId)
-			//log.Printf("收到任务完成响应，taskId=%d type=%d", req.TaskId, req.Type)
+			log.Printf("收到任务完成响应，taskId=%d type=%d", req.TaskId, req.Type)
 			return nil
 		}
 	}
@@ -88,11 +89,11 @@ func (c *Coordinator) server() {
 func (c *Coordinator) Done() bool {
 	if c.Holder.mapFinCount == 0 && c.Status == StatusMap {
 		c.Status = StatusReduce
-		//log.Printf("map阶段已经完成")
+		log.Printf("map阶段已经完成")
 		go c.addReduceTask()
 	}
 	if c.Holder.reduceFinCount == 0 && c.Status == StatusReduce {
-		//log.Printf("reduce阶段已经完成")
+		log.Printf("reduce阶段已经完成")
 		c.Status = StatusFin
 		return true
 	}
@@ -124,7 +125,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 	c.server()
 
-	//log.Printf("coordinator已上线\n")
+	log.Printf("coordinator已上线\n")
 
 	return &c
 }
@@ -138,13 +139,13 @@ func (c *Coordinator) judgeTaskStatus() {
 			}
 			if task.Status == StatusFin {
 				c.Holder.DelFrontTask()
-				//log.Printf("task执行成功 type=%v taskId=%v\n", task.Type, task.Id)
+				log.Printf("task执行成功 type=%v taskId=%v\n", task.Type, task.Id)
 				continue
 			}
 			if time.Now().Unix()-task.StartTime > 10 {
 				c.Holder.DelFrontTask()
 				c.addTask(task)
-				//log.Printf("task过期 type=%v taskId=%v\n", task.Type, task.Id)
+				log.Printf("task过期 type=%v taskId=%v\n", task.Type, task.Id)
 			}
 		}
 
@@ -197,7 +198,8 @@ func (c *Coordinator) addReduceTask() {
 func (c *Coordinator) selectReduceFileName(id int) []string {
 	fileName := make([]string, len(c.files))
 	for i, file := range c.files {
-		fileName[i] = "mr-tmp-" + file + "-" + strconv.Itoa(id)
+		split := strings.Split(file, "/")
+		fileName[i] = "mr-tmp-" + split[len(split)-1] + "-" + strconv.Itoa(id)
 	}
 	return fileName
 }
