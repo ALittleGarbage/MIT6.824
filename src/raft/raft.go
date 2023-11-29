@@ -34,11 +34,6 @@ const (
 	Leader
 )
 
-const (
-	ReqTypeVote = iota
-	ReqTypeHeartBeat
-)
-
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
 // tester) on the same server, via the applyCh passed to Make(). set
@@ -60,7 +55,6 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
-// A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
@@ -133,84 +127,15 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-// RequestVoteArgs RPC请求
-type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
-	ReqType int
-	Term    int
-	RfId    int
-}
-
-// RequestVoteReply RPC响应
-type RequestVoteReply struct {
-	// Your data here (2A).
-	Status int
-	Term   int
-}
-
-// RequestVote RPC handler.
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (2A, 2B).
-	if args.ReqType == ReqTypeVote {
-		rf.handlerVote(args, reply)
-	}
-	if args.ReqType == ReqTypeHeartBeat {
-		rf.handlerHeartBeat(args, reply)
-	}
-}
-
-// handlerVote 处理选举请求，是否投票，响应Candidate
-func (rf *Raft) handlerVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	if args.Term < rf.term { // 小于自己的任期，不理睬，直接返回
-		reply.Status = 0
-		reply.Term = rf.term
-		return
-	}
-	if args.Term > rf.term { // 大于自己的任期，重置投票次数
-		rf.term = args.Term
-		rf.votedFor = -1
-		rf.nodeType = Follower
-	}
-	// 大于自己的任期，投票跟随他，等于自己的任期，判断是否有投票次数
-	reply.Term = rf.term
-	if rf.votedFor == -1 { // 同意投票
-		rf.votedFor = args.RfId
-		rf.nodeType = Follower
-		reply.Status = 1
-		log.Printf("%d投给了%d\n", rf.me, args.RfId)
-	} else { //拒绝投票
-		reply.Status = 0
-	}
-}
-
-// handlerHeartBeat 处理心跳请求，响应Leader
-func (rf *Raft) handlerHeartBeat(args *RequestVoteArgs, reply *RequestVoteReply) {
-	rf.mu.Lock()
-	// 自己的term大于请求的任期，旧任期直接丢弃
-	if rf.term > args.Term {
-		reply.Status = 0
-		reply.Term = rf.term
-		rf.mu.Unlock()
-		return
-	}
-	rf.mu.Unlock()
-
-	rf.mu.Lock()
-	// 真正的leader心跳请求，响应他
-	rf.lastHeartBeat = time.Now().UnixNano() // 更新心跳
-	rf.nodeType = Follower                   // 重置为follower
-	if rf.term < args.Term {                 // 如果小于请求term
-		rf.term = args.Term
-		reply.Term = rf.term
-	}
-	rf.mu.Unlock()
-}
-
+// sendRequestVote 发送拉票请求
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	return ok
+}
+
+// sendAppendEntries 发送心跳请求
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
 }
 
@@ -299,22 +224,22 @@ func (rf *Raft) isHeartbeatTimeout() bool {
 func (rf *Raft) startVote() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	// 成为candidate 任期+1 先投票给自己
-	rf.nodeType = Candidate
-	rf.term++
+
+	rf.nodeType = Candidate // 成为candidate，先把票投给自己
+	rf.term++               // 任期+1
 	term := rf.term
-	rf.votedFor = rf.me
-	vote := 1
-	flag := false
-	req := RequestVoteArgs{Term: term, RfId: rf.me}
+	rf.votedFor = rf.me // 投给自己
+	vote := 1           // 投票数+1
+	flag := false       // 是否已经取得vote结果
+	req := RequestVoteArgs{Term: term, CandidateId: rf.me}
 	for i := range rf.peers {
-		if i == rf.me {
+		if i == rf.me { // 跳过自己
 			continue
 		}
 		go func(serverId int) {
 			reply := RequestVoteReply{}
 			ok := rf.sendRequestVote(serverId, &req, &reply)
-			if !ok || reply.Status == 0 {
+			if !ok || !reply.VoteGranted {
 				return
 			}
 
@@ -345,11 +270,12 @@ func (rf *Raft) sendHeartBeat() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	req := RequestVoteArgs{ReqType: ReqTypeHeartBeat, Term: rf.term, RfId: rf.me}
+	req := AppendEntriesArgs{Term: rf.term, LeaderId: rf.me}
 	for i := range rf.peers {
 		if i == rf.me {
 			continue
 		}
-		go rf.sendRequestVote(i, &req, &RequestVoteReply{})
+		reply := AppendEntriesReply{}
+		go rf.sendAppendEntries(i, &req, &reply)
 	}
 }
