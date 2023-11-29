@@ -18,7 +18,7 @@ package raft
 //
 
 import (
-	//	"bytes"
+	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -28,6 +28,16 @@ import (
 	"6.5840/labrpc"
 )
 
+const (
+	Follower = iota
+	Candidate
+	Leader
+)
+
+const (
+	ReqTypeVote = iota
+	ReqTypeHeartBeat
+)
 
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -61,17 +71,19 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-
+	lastHeartBeat int64
+	nodeType      int
+	term          int
+	votedFor      int
 }
 
-// return currentTerm and whether this server
-// believes it is the leader.
+// GetState 返回 任期 和 isLeader
 func (rf *Raft) GetState() (int, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
-	var term int
-	var isleader bool
-	// Your code here (2A).
-	return term, isleader
+	term, isLeader := rf.term, rf.nodeType == Leader
+	return term, isLeader
 }
 
 // save Raft's persistent state to stable storage,
@@ -91,7 +103,6 @@ func (rf *Raft) persist() {
 	// raftstate := w.Bytes()
 	// rf.persister.Save(raftstate, nil)
 }
-
 
 // restore previously persisted state.
 func (rf *Raft) readPersist(data []byte) {
@@ -113,7 +124,6 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
-
 // the service says it has created a snapshot that has
 // all info up to and including index. this means the
 // service no longer needs the log through (and including)
@@ -123,56 +133,86 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
+// RequestVoteArgs RPC请求
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	ReqType int
+	Term    int
+	RfId    int
 }
 
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
+// RequestVoteReply RPC响应
 type RequestVoteReply struct {
 	// Your data here (2A).
+	Status int
+	Term   int
 }
 
-// example RequestVote RPC handler.
+// RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	if args.ReqType == ReqTypeVote {
+		rf.handlerVote(args, reply)
+	}
+	if args.ReqType == ReqTypeHeartBeat {
+		rf.handlerHeartBeat(args, reply)
+	}
 }
 
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
-// the types of the args and reply passed to Call() must be
-// the same as the types of the arguments declared in the
-// handler function (including whether they are pointers).
-//
-// The labrpc package simulates a lossy network, in which servers
-// may be unreachable, and in which requests and replies may be lost.
-// Call() sends a request and waits for a reply. If a reply arrives
-// within a timeout interval, Call() returns true; otherwise
-// Call() returns false. Thus Call() may not return for a while.
-// A false return can be caused by a dead server, a live server that
-// can't be reached, a lost request, or a lost reply.
-//
-// Call() is guaranteed to return (perhaps after a delay) *except* if the
-// handler function on the server side does not return.  Thus there
-// is no need to implement your own timeouts around Call().
-//
-// look at the comments in ../labrpc/labrpc.go for more details.
-//
-// if you're having trouble getting RPC to work, check that you've
-// capitalized all field names in structs passed over RPC, and
-// that the caller passes the address of the reply struct with &, not
-// the struct itself.
+// handlerVote 处理选举请求，是否投票，响应Candidate
+func (rf *Raft) handlerVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if args.Term < rf.term { // 小于自己的任期，不理睬，直接返回
+		reply.Status = 0
+		reply.Term = rf.term
+		return
+	}
+	if args.Term > rf.term { // 大于自己的任期，重置投票次数
+		rf.term = args.Term
+		rf.votedFor = -1
+		rf.nodeType = Follower
+	}
+	// 大于自己的任期，投票跟随他，等于自己的任期，判断是否有投票次数
+	reply.Term = rf.term
+	if rf.votedFor == -1 { // 同意投票
+		rf.votedFor = args.RfId
+		rf.nodeType = Follower
+		reply.Status = 1
+		log.Printf("%d投给了%d\n", rf.me, args.RfId)
+	} else { //拒绝投票
+		reply.Status = 0
+	}
+}
+
+// handlerHeartBeat 处理心跳请求，响应Leader
+func (rf *Raft) handlerHeartBeat(args *RequestVoteArgs, reply *RequestVoteReply) {
+	rf.mu.Lock()
+	// 自己的term大于请求的任期，旧任期直接丢弃
+	if rf.term > args.Term {
+		reply.Status = 0
+		reply.Term = rf.term
+		rf.mu.Unlock()
+		return
+	}
+	rf.mu.Unlock()
+
+	rf.mu.Lock()
+	// 真正的leader心跳请求，响应他
+	rf.lastHeartBeat = time.Now().UnixNano() // 更新心跳
+	rf.nodeType = Follower                   // 重置为follower
+	if rf.term < args.Term {                 // 如果小于请求term
+		rf.term = args.Term
+		reply.Term = rf.term
+	}
+	rf.mu.Unlock()
+}
+
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }
-
 
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -193,19 +233,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// Your code here (2B).
 
-
 	return index, term, isLeader
 }
 
-// the tester doesn't halt goroutines created by Raft after each test,
-// but it does call the Kill() method. your code can use killed() to
-// check whether Kill() has been called. the use of atomic avoids the
-// need for a lock.
-//
-// the issue is that long-running goroutines use memory and may chew
-// up CPU time, perhaps causing later tests to fail and generating
-// confusing debug output. any goroutine with a long-running loop
-// should call killed() to check whether it should stop.
+// Kill 自杀
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
@@ -218,14 +249,10 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
-
-		// Your code here (2A)
-		// Check if a leader election should be started.
-
-
-		// pause for a random amount of time between 50 and 350
-		// milliseconds.
-		ms := 50 + (rand.Int63() % 300)
+		if rf.nodeType != Leader && rf.isHeartbeatTimeout() {
+			rf.startVote()
+		}
+		ms := 50 + (rand.Int63() % 100)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 }
@@ -241,10 +268,17 @@ func (rf *Raft) ticker() {
 // for any long-running work.
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
-	rf := &Raft{}
-	rf.peers = peers
-	rf.persister = persister
-	rf.me = me
+	rf := &Raft{
+		mu:            sync.Mutex{},
+		peers:         peers,
+		persister:     persister,
+		me:            me,
+		dead:          0,
+		lastHeartBeat: 0,
+		nodeType:      Follower,
+		term:          0,
+		votedFor:      -1,
+	}
 
 	// Your initialization code here (2A, 2B, 2C).
 
@@ -253,7 +287,69 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
-
-
 	return rf
+}
+
+// isHeartbeatTimeout 判断心跳是否超时，超时就可以参加选举了
+func (rf *Raft) isHeartbeatTimeout() bool {
+	return time.Now().UnixNano()-rf.lastHeartBeat > int64(time.Millisecond*50)
+}
+
+// startVote 参加选举，开始拉票
+func (rf *Raft) startVote() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	// 成为candidate 任期+1 先投票给自己
+	rf.nodeType = Candidate
+	rf.term++
+	term := rf.term
+	rf.votedFor = rf.me
+	vote := 1
+	flag := false
+	req := RequestVoteArgs{Term: term, RfId: rf.me}
+	for i := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+		go func(serverId int) {
+			reply := RequestVoteReply{}
+			ok := rf.sendRequestVote(serverId, &req, &reply)
+			if !ok || reply.Status == 0 {
+				return
+			}
+
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
+			//丢弃无效票或者vote已经超过多数了，退出
+			if rf.term > reply.Term || flag {
+				return
+			}
+			vote++
+			if vote > len(rf.peers)/2 {
+				log.Printf("%d超过多数 vote:%d，成为leader\n", rf.me, vote)
+				flag = true          // 之后的协程不需要再次判断vote了
+				rf.nodeType = Leader // 将自身设置为leader
+				go func() {          // 成为leader立刻开启心跳
+					for rf.killed() == false && rf.nodeType == Leader {
+						rf.sendHeartBeat()
+						time.Sleep(time.Millisecond * 10)
+					}
+				}()
+			}
+		}(i)
+	}
+}
+
+// sendHeartBeat 向每个Follower发送心跳
+func (rf *Raft) sendHeartBeat() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	req := RequestVoteArgs{ReqType: ReqTypeHeartBeat, Term: rf.term, RfId: rf.me}
+	for i := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+		go rf.sendRequestVote(i, &req, &RequestVoteReply{})
+	}
 }

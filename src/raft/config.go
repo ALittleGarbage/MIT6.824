@@ -106,6 +106,7 @@ func make_config(t *testing.T, n int, unreliable bool, snapshot bool) *config {
 }
 
 // shut down a Raft server but save its persistent state.
+// 自杀
 func (cfg *config) crash1(i int) {
 	cfg.disconnect(i)
 	cfg.net.DeleteServer(i) // disable client connections to the server.
