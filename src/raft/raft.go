@@ -71,10 +71,10 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	lastHeartBeat int64
-	nodeType      int
-	term          int
-	votedFor      int
+	lastHeartBeat int64 // 最后一次心跳时间
+	nodeType      int   // 节点类型
+	term          int   // 任期
+	votedFor      int   // 给谁投票了
 }
 
 // GetState 返回 任期 和 isLeader
