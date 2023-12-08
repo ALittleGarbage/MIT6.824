@@ -1,7 +1,6 @@
 package raft
 
 import (
-	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -59,7 +58,7 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	applyCh       chan ApplyMsg
 	lastHeartBeat int64 // 最后一次心跳时间
-	nodeType      int   // 节点类型
+	status        int   // 节点类型
 	currentTerm   int   // 任期
 	votedFor      int   // 投票的候选者id
 	logs          []LogEntry
@@ -74,7 +73,7 @@ func (rf *Raft) GetState() (int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	term, isLeader := rf.currentTerm, rf.nodeType == Leader
+	term, isLeader := rf.currentTerm, rf.status == Leader
 	return term, isLeader
 }
 
@@ -116,32 +115,26 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 // Start 由客户端调用用来添加新的命令到本地日志中，leader将其复制到集群中其他节点上
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := false
-
-	if rf.killed() {
-		return -1, -1, false
-	}
-
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	isLeader = rf.nodeType == Leader
-	if !isLeader {
-		return -1, -1, false
+
+	if rf.status != Leader {
+		return -1, rf.currentTerm, false
 	}
 
-	term = rf.currentTerm
-	index = len(rf.logs) + 1
-	log.Printf("leader %d 收到命令 index：%d\n", rf.me, index)
-	rf.logs = append(rf.logs, LogEntry{Index: index, Term: term, Command: command})
-	rf.nextIndex[rf.me] = index + 1
-	return index, term, isLeader
+	index := rf.getLastLog().Index + 1
+	term := rf.currentTerm
+
+	DPrintf("leader %d 收到命令 index：%d\n", rf.me, index)
+	entry := LogEntry{Index: index, Term: term, Command: command}
+	rf.logs = append(rf.logs, entry)
+
+	return index, term, true
 }
 
 // Kill 自杀
 func (rf *Raft) Kill() {
-	log.Printf("%d killed\n", rf.me)
+	DPrintf("%d killed\n", rf.me)
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
 }
@@ -154,11 +147,11 @@ func (rf *Raft) killed() bool {
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
 		rf.mu.Lock()
-		if rf.nodeType == Leader {
+		if rf.status == Leader {
 			rf.startAppendEntries()
 			time.Sleep(AppendEntriesTime)
 		}
-		if rf.nodeType != Leader && rf.isHeartbeatTimeout() {
+		if rf.status != Leader && rf.isHeartbeatTimeout() {
 			ms := 50 + (rand.Int63() % 300)
 			time.Sleep(time.Duration(ms) * time.Millisecond)
 			rf.startVote()
@@ -179,7 +172,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		dead:          0,
 		applyCh:       applyCh,
 		lastHeartBeat: 0,
-		nodeType:      Follower,
+		status:        Follower,
 		currentTerm:   0,
 		votedFor:      -1,
 		logs:          make([]LogEntry, 0),
@@ -200,19 +193,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	return rf
 }
 
-// isHeartbeatTimeout 判断心跳是否超时，超时就可以参加选举了
-func (rf *Raft) isHeartbeatTimeout() bool {
-	return time.Now().UnixNano()-rf.lastHeartBeat > int64(HeartbeatTimeout)
-}
-
 // startVote 参加选举，开始拉票
 func (rf *Raft) startVote() {
-	rf.nodeType = Candidate // 成为candidate，先把票投给自己
-	rf.currentTerm++        // 任期+1
+	rf.status = Candidate // 成为candidate，先把票投给自己
+	rf.currentTerm++      // 任期+1
 	term := rf.currentTerm
 	rf.votedFor = rf.me // 投给自己
 	vote := 1           // 投票数+1
-	flag := false       // 是否已经取得vote结果
+	becomeLeader := sync.Once{}
 	lastLog := rf.getLastLog()
 	req := RequestVoteArgs{
 		Term:         term,
@@ -224,11 +212,11 @@ func (rf *Raft) startVote() {
 		if i == rf.me { // 跳过自己
 			continue
 		}
-		go rf.executeVote(i, &vote, &flag, &req)
+		go rf.executeVote(i, &vote, &becomeLeader, &req)
 	}
 }
 
-func (rf *Raft) executeVote(serverId int, vote *int, flag *bool, req *RequestVoteArgs) {
+func (rf *Raft) executeVote(serverId int, vote *int, becomeLeader *sync.Once, req *RequestVoteArgs) {
 	reply := RequestVoteReply{}
 	ok := rf.sendRequestVote(serverId, req, &reply)
 	if !ok || !reply.VoteGranted {
@@ -237,60 +225,81 @@ func (rf *Raft) executeVote(serverId int, vote *int, flag *bool, req *RequestVot
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	//丢弃无效票或者vote已经超过多数了，退出
-	if rf.currentTerm > reply.Term || *flag {
+	if req.Term < reply.Term {
+		rf.currentTerm = reply.Term
+		return
+	}
+	if req.Term > reply.Term {
 		return
 	}
 	*vote++
-	if *vote > len(rf.peers)/2 {
-		log.Printf("%d超过多数 vote:%d，成为leader\n", rf.me, vote)
-		*flag = true               // 之后的协程不需要再次判断vote了
-		rf.nodeType = Leader       // 将自身设置为leader
-		go rf.startAppendEntries() // 成为leader立刻开启心跳
+	if *vote > len(rf.peers)/2 && rf.currentTerm == req.Term && rf.status == Candidate {
+		becomeLeader.Do(func() { // 仅执行一次成为leader操作
+			DPrintf("%d超过多数 vote:%d，成为leader\n", rf.me, vote)
+			rf.status = Leader // 将自身设置为leader
+			lastLog := rf.getLastLog()
+			for i := range rf.peers { // 初始化follower的日志索引
+				rf.nextIndex[i] = lastLog.Index + 1
+				rf.matchIndex[i] = 0
+			}
+			go rf.startAppendEntries() // 成为leader立刻开启心跳
+		})
 	}
 }
 
 // startAppendEntries 向每个Follower发送心跳和日志
 func (rf *Raft) startAppendEntries() {
+	lastLog := rf.getLastLog()
 	committed := 1
 	flag := false
 	for i := range rf.peers {
 		if i == rf.me {
 			continue
 		}
-		go rf.executeAppendEntries(i, &committed, &flag)
+		nextIndex := rf.nextIndex[i]
+		if nextIndex <= 0 {
+			nextIndex = 1
+		}
+		if lastLog.Index+1 < nextIndex {
+			nextIndex = lastLog.Index
+		}
+		preLog := rf.logs[nextIndex-1] // 获取上一个日志
+		req := AppendEntriesArgs{
+			Term:         rf.currentTerm,
+			LeaderId:     rf.me,
+			PrevLogIndex: preLog.Index,
+			PrevLogTerm:  preLog.Term,
+			Entries:      rf.logs[nextIndex:],
+			LeaderCommit: rf.commitIndex,
+		}
+
+		go rf.executeAppendEntries(i, &committed, &flag, &req)
 	}
 }
 
-func (rf *Raft) executeAppendEntries(serverId int, committed *int, flag *bool) {
-	req := AppendEntriesArgs{
-		Term:         rf.currentTerm,
-		LeaderId:     rf.me,
-		PrevLogIndex: 0, // 前一个的索引，默认为nextIndex为0
-		PrevLogTerm:  0,
-		Entries:      nil,
-		LeaderCommit: rf.commitIndex,
-	}
-	req.Entries = rf.logs[rf.nextIndex[serverId]:]
-	if rf.nextIndex[serverId] > 0 {
-		entry := rf.logs[rf.nextIndex[serverId]-1]
-		req.PrevLogIndex = entry.Index
-		req.PrevLogTerm = entry.Term
-	}
-
+func (rf *Raft) executeAppendEntries(serverId int, committed *int, flag *bool, req *AppendEntriesArgs) {
 	reply := AppendEntriesReply{}
-	rf.sendAppendEntries(serverId, &req, &reply)
-	if !reply.Success && rf.currentTerm > reply.Term { // 心跳失败
-		return
-	}
-
-	if !reply.Success { // 日志同步失败，说明日志存在缺少，更新nextIndex
-		rf.nextIndex[serverId] = reply.NextIndex
+	ok := rf.sendAppendEntries(serverId, req, &reply)
+	if !ok { // 心跳失败
 		return
 	}
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	if rf.currentTerm < reply.Term {
+		rf.currentTerm = reply.Term
+		return
+	}
+	if req.Term == rf.currentTerm {
+		if reply.Success {
+			match := req.PrevLogIndex + len(req.Entries)
+			next := match + 1
+			rf.nextIndex[serverId] = MaxInt(rf.nextIndex[serverId], next)
+			rf.matchIndex[serverId] = MaxInt(rf.matchIndex[serverId], match)
+		}
+		// todo
+	}
+
 	*committed++
 	if *committed > len(rf.peers)/2 && !*flag { // 超过半数，增加commitIndex
 		*flag = true
@@ -304,11 +313,16 @@ func (rf *Raft) executeAppendEntries(serverId int, committed *int, flag *bool) {
 			rf.commitIndex++
 			rf.lastApplied = rf.commitIndex
 			rf.applyCh <- applyMsg
-			log.Printf("leader %d 已提交 %d\n", rf.me, entry.Index)
+			DPrintf("leader %d 已提交 %d\n", rf.me, entry.Index)
 		}
 	}
 	// 更新follower的nextIndex
 	rf.nextIndex[serverId] = reply.NextIndex
+}
+
+// isHeartbeatTimeout 判断心跳是否超时，超时就可以参加选举了
+func (rf *Raft) isHeartbeatTimeout() bool {
+	return time.Now().UnixNano()-rf.lastHeartBeat > int64(HeartbeatTimeout)
 }
 
 func (rf *Raft) getLastLog() LogEntry {

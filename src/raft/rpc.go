@@ -1,7 +1,6 @@
 package raft
 
 import (
-	"log"
 	"time"
 )
 
@@ -79,15 +78,15 @@ func (rf *Raft) handlerVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
-		rf.nodeType = Follower
+		rf.status = Follower
 	}
 	// 大于自己的任期，投票跟随他，等于自己的任期，判断是否有投票次数
 	reply.Term = rf.currentTerm
 	if rf.votedFor == -1 { // 同意投票
 		rf.votedFor = args.CandidateId
-		rf.nodeType = Follower
+		rf.status = Follower
 		reply.VoteGranted = true
-		log.Printf("%d投给了%d\n", rf.me, args.CandidateId)
+		DPrintf("%d投给了%d\n", rf.me, args.CandidateId)
 	} else { //拒绝投票
 		reply.VoteGranted = false
 	}
@@ -109,7 +108,7 @@ func (rf *Raft) handlerHeartBeat(args *AppendEntriesArgs, reply *AppendEntriesRe
 	// 真正的leader心跳请求，响应他
 	rf.mu.Lock()
 	rf.lastHeartBeat = time.Now().UnixNano() // 更新心跳
-	rf.nodeType = Follower                   // 重置为follower
+	rf.status = Follower                     // 重置为follower
 	if rf.currentTerm < args.Term {          // 如果小于请求term
 		rf.currentTerm = args.Term
 		reply.Term = rf.currentTerm
@@ -150,7 +149,7 @@ func (rf *Raft) handlerLog(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 		rf.commitIndex++
 		rf.lastApplied = rf.commitIndex
 		rf.applyCh <- applyMsg
-		log.Printf("follow %d 已提交 %d\n", rf.me, entry.Index)
+		DPrintf("follow %d 已提交 %d\n", rf.me, entry.Index)
 	}
 	// 更新nextIndex
 	for i := 0; i < len(rf.nextIndex); i++ {
