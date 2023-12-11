@@ -20,3 +20,9 @@ func MaxInt(left int, right int) int {
 	}
 	return right
 }
+func MinInt(left int, right int) int {
+	if left < right {
+		return left
+	}
+	return right
+}

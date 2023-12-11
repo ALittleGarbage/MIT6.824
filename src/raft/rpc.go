@@ -1,14 +1,10 @@
 package raft
 
-import (
-	"time"
-)
-
 type RequestVoteArgs struct {
 	Term         int
 	CandidateId  int
 	LastLogIndex int //候选者最后一条日志记录的索引
-	LastLogItem  int //候选者最后一条日志记录的索引的任期
+	LastLogTerm  int //候选者最后一条日志记录的索引的任期
 }
 
 type RequestVoteReply struct {
@@ -45,16 +41,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 // RequestVote Vote handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (2A, 2B).
 	rf.handlerVote(args, reply)
-}
-
-// AppendEntries HeartBeat handler
-func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	rf.handlerHeartBeat(args, reply)
-	if reply.Success {
-		rf.handlerLog(args, reply)
-	}
 }
 
 // handlerVote 处理选举请求，是否投票，响应Candidate
@@ -62,101 +49,88 @@ func (rf *Raft) handlerVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	// 小于自己的任期，不理睬，直接返回
-	if args.Term < rf.currentTerm {
-		reply.VoteGranted = false
-		reply.Term = rf.currentTerm
-		return
-	}
-	//处理日志
-	if args.LastLogIndex < rf.commitIndex {
-		reply.VoteGranted = false
-		reply.Term = rf.currentTerm
-		return
-	}
-	// 大于自己的任期，重置投票次数
-	if args.Term > rf.currentTerm {
-		rf.currentTerm = args.Term
-		rf.votedFor = -1
-		rf.status = Follower
-	}
-	// 大于自己的任期，投票跟随他，等于自己的任期，判断是否有投票次数
+	reply.VoteGranted = false
 	reply.Term = rf.currentTerm
-	if rf.votedFor == -1 { // 同意投票
+	// 请求的term小于等于自己的term，丢弃直接返回
+	if args.Term <= rf.currentTerm {
+		return
+	}
+	// 请求term大于自己的term，换成请求的term，重置自己的投票
+	rf.currentTerm = args.Term
+	rf.status = Follower
+	rf.votedFor = -1
+	rf.restElectionTime()
+
+	lastLog := rf.getLastLog()
+	// 还要判断日志是否日志，对方的日志大于我 或者 如果不大于则判断最后一个日志是否一致
+	judgeLog := args.LastLogTerm > lastLog.Term || (args.LastLogTerm == lastLog.Term && args.LastLogIndex >= lastLog.Index)
+	if judgeLog { // 同意投票
 		rf.votedFor = args.CandidateId
 		rf.status = Follower
 		reply.VoteGranted = true
-		DPrintf("%d投给了%d\n", rf.me, args.CandidateId)
+		DPrintf("%d 投给了 %d\n", rf.me, args.CandidateId)
 	} else { //拒绝投票
 		reply.VoteGranted = false
 	}
+	reply.Term = rf.currentTerm
 }
 
-// handlerHeartBeat 处理心跳请求，响应Leader
-func (rf *Raft) handlerHeartBeat(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	rf.mu.Lock()
-	// 自己的term大于请求的任期，旧任期直接丢弃，并且日志索引大于请求的索引
-	lastIndex := len(rf.logs) - 1
-	if args.PrevLogIndex < lastIndex && rf.currentTerm > args.Term {
-		reply.Success = false
-		reply.Term = rf.currentTerm
-		rf.mu.Unlock()
-		return
-	}
-	rf.mu.Unlock()
-
-	// 真正的leader心跳请求，响应他
-	rf.mu.Lock()
-	rf.lastHeartBeat = time.Now().UnixNano() // 更新心跳
-	rf.status = Follower                     // 重置为follower
-	if rf.currentTerm < args.Term {          // 如果小于请求term
-		rf.currentTerm = args.Term
-		reply.Term = rf.currentTerm
-	}
-	reply.Success = true
-	rf.mu.Unlock()
+// AppendEntries HeartBeat handler
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.handlerAppendEntries(args, reply)
 }
 
-func (rf *Raft) handlerLog(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+// handlerAppendEntries 处理心跳请求，响应Leader
+func (rf *Raft) handlerAppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	// 判断日志是否正确
-	if args.PrevLogIndex > 0 && len(rf.logs) > 0 &&
-		(len(rf.logs) < args.PrevLogIndex ||
-			rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm ||
-			rf.commitIndex > args.PrevLogIndex) {
-		reply.Term = rf.currentTerm
-		reply.Success = false
-		reply.NextIndex = rf.commitIndex + 1
+	reply.Success = false
+	reply.Term = rf.currentTerm
+	reply.NextIndex = len(rf.logs)
+
+	// 请求的term大于自己的term，改为请求的term
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+	}
+	// 如果请求term小于自己的term，丢弃直接返回
+	if args.Term < rf.currentTerm {
 		return
 	}
-	// 判断是否是空日志
-	if len(args.Entries) != 0 {
-		// 添加日志
-		rf.logs = rf.logs[:args.PrevLogIndex]
-		rf.logs = append(rf.logs, args.Entries...)
+
+	// 重置选举时间
+	rf.restHeartBeat()
+	rf.status = Follower
+
+	// 自己最后一个log依旧小于请求的前一个日志（至少应该相等），说明数据不一致
+	if rf.getLastLog().Index < args.PrevLogIndex {
+		return
 	}
+	// 自己所对应的日志的term不等于请求的任期，出现数据不一致
+	if rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm {
+		xTerm := rf.logs[args.PrevLogIndex].Term
+		// 从后面开始找，找到第一个与xTerm不等于的索引，所以后面的全是与xTerm一样term的，全部替换
+		for xIndex := args.PrevLogIndex; xIndex > 0; xIndex-- {
+			if rf.logs[xIndex-1].Term != xTerm {
+				reply.NextIndex = xIndex
+				break
+			}
+		}
+		return
+	}
+	// 找到第一个不存在的log，添加后面的
+	for index, entry := range args.Entries {
+		if entry.Index > rf.getLastLog().Index {
+			rf.logs = append(rf.logs, args.Entries[index:]...)
+			break
+		}
+	}
+	reply.NextIndex = len(rf.logs)
+	reply.Success = true
 
 	// 提交日志
-	for rf.commitIndex < args.LeaderCommit {
-		entry := rf.logs[rf.commitIndex]
-		applyMsg := ApplyMsg{
-			CommandValid: true,
-			CommandIndex: entry.Index,
-			Command:      entry.Command,
-		}
-		rf.commitIndex++
-		rf.lastApplied = rf.commitIndex
-		rf.applyCh <- applyMsg
-		DPrintf("follow %d 已提交 %d\n", rf.me, entry.Index)
+	if args.LeaderCommit > rf.commitIndex {
+		rf.commitIndex = MinInt(args.LeaderCommit, rf.getLastLog().Index)
+		go rf.commitLog()
 	}
-	// 更新nextIndex
-	for i := 0; i < len(rf.nextIndex); i++ {
-		rf.nextIndex[i] = rf.commitIndex
-	}
-
-	reply.Term = rf.currentTerm
-	reply.Success = true
-	reply.NextIndex = len(rf.logs)
 }
