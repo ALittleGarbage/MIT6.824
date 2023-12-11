@@ -57,7 +57,7 @@ type Raft struct {
 
 	// Your data here (2A, 2B, 2C).
 	applyCh       chan ApplyMsg
-	lastHeartBeat int64 // 最后一次心跳时间
+	lastHeartBeat time.Time // 最后一次心跳时间
 	electionTime  time.Time
 	status        int // 节点类型
 	currentTerm   int // 任期
@@ -333,11 +333,11 @@ func (rf *Raft) getLastLog() LogEntry {
 }
 
 func (rf *Raft) isHeartTimeout() bool {
-	return time.Now().UnixNano()-rf.lastHeartBeat > int64(HeartbeatTimeout)
+	return time.Now().After(rf.lastHeartBeat)
 }
 
 func (rf *Raft) restHeartBeat() {
-	rf.lastHeartBeat = time.Now().UnixNano()
+	rf.lastHeartBeat = time.Now().Add(HeartbeatTimeout)
 }
 
 func (rf *Raft) isElectionTimeout() bool {
