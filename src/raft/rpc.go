@@ -77,7 +77,6 @@ func (rf *Raft) handlerVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 // AppendEntries HeartBeat handler
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	//DPrintf("%d 接收到 %d 的日志\n", rf.me, args.LeaderId)
 	rf.handlerAppendEntries(args, reply)
 }
 
@@ -85,10 +84,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 func (rf *Raft) handlerAppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-
-	if len(args.Entries) != 0 {
-		DPrintf("%d 接收到日志：%d\n", rf.me, args.Entries)
-	}
 
 	reply.Success = false
 	reply.Term = rf.currentTerm
@@ -123,12 +118,11 @@ func (rf *Raft) handlerAppendEntries(args *AppendEntriesArgs, reply *AppendEntri
 		}
 		return
 	}
-	// 同步日志  todo
-	for idx, entry := range args.Entries {
-		if entry.Index > rf.getLastLog().Index {
-			rf.logs = append(rf.logs, args.Entries[idx:]...)
-			break
-		}
+	// 同步日志
+	if len(args.Entries) > 0 && args.Entries[0].Index > 0 {
+		entry := args.Entries[0]
+		rf.logs = rf.logs[:entry.Index]
+		rf.logs = append(rf.logs, args.Entries...)
 	}
 
 	reply.NextIndex = len(rf.logs)

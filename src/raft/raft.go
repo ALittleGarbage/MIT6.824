@@ -145,6 +145,7 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+// ticker 选举或者发送心跳日志
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
 		if rf.status == Leader {
@@ -219,6 +220,7 @@ func (rf *Raft) startVote() {
 	}
 }
 
+// executeVote 处理某个节点投票的响应
 func (rf *Raft) executeVote(serverId int, vote *int, becomeLeader *sync.Once, req *RequestVoteArgs) {
 	reply := RequestVoteReply{}
 	ok := rf.sendRequestVote(serverId, req, &reply)
@@ -259,7 +261,6 @@ func (rf *Raft) startAppendEntries() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	//DPrintf("%d 开始同步日志\n", rf.me)
 	lastLog := rf.getLastLog()
 	for i := range rf.peers {
 		if i == rf.me {
@@ -286,6 +287,7 @@ func (rf *Raft) startAppendEntries() {
 	}
 }
 
+// executeAppendEntries 处理某个节点的日志响应
 func (rf *Raft) executeAppendEntries(serverId int, req *AppendEntriesArgs) {
 	reply := AppendEntriesReply{}
 	ok := rf.sendAppendEntries(serverId, req, &reply)
@@ -315,6 +317,7 @@ func (rf *Raft) executeAppendEntries(serverId int, req *AppendEntriesArgs) {
 	}
 }
 
+// leaderCommitLog leader更新可以提交的日志
 func (rf *Raft) leaderCommitLog() {
 	for idx := rf.commitIndex + 1; idx <= rf.getLastLog().Index; idx++ {
 		if rf.logs[idx].Term != rf.currentTerm {
@@ -333,10 +336,10 @@ func (rf *Raft) leaderCommitLog() {
 	}
 }
 
+// apply 执行提交操作
 func (rf *Raft) apply() {
 	for !rf.killed() {
 		rf.mu.Lock()
-		//DPrintf("%d 开始提交日志 commitIndex：%d lastApplied：%d\n", rf.me, rf.commitIndex, rf.lastApplied)
 		if rf.commitIndex > rf.lastApplied && rf.getLastLog().Index > rf.lastApplied {
 			rf.lastApplied++
 			entry := rf.logs[rf.lastApplied]
@@ -354,22 +357,27 @@ func (rf *Raft) apply() {
 
 }
 
+// getLastLog 获取最后一个日志
 func (rf *Raft) getLastLog() LogEntry {
 	return rf.logs[len(rf.logs)-1]
 }
 
+// isHeartTimeout 判断心跳是否超时
 func (rf *Raft) isHeartTimeout() bool {
 	return time.Now().After(rf.lastHeartBeat)
 }
 
+// restHeartBeat 重置心跳
 func (rf *Raft) restHeartBeat() {
 	rf.lastHeartBeat = time.Now().Add(HeartbeatTimeout)
 }
 
+// isElectionTimeout 判断选举是否超时（不能固定选举，要随机停顿，避免同时选举）
 func (rf *Raft) isElectionTimeout() bool {
 	return time.Now().After(rf.electionTime)
 }
 
+// restElectionTime 重置选举时间
 func (rf *Raft) restElectionTime() {
 	extra := time.Duration(50+rand.Int63()%300) * time.Millisecond
 	rf.electionTime = time.Now().Add(extra)

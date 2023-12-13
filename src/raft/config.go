@@ -144,7 +144,6 @@ func (cfg *config) checkLogs(i int, m ApplyMsg) (string, bool) {
 	for j := 0; j < len(cfg.logs); j++ {
 		if old, oldok := cfg.logs[j][m.CommandIndex]; oldok && old != v {
 			log.Printf("%v: log %v; server %v\n", i, cfg.logs[i], cfg.logs[j])
-			DPrintf("此时所有节点的日志记录：%+v\n", cfg.logs)
 			// some server has already committed a different value for this entry!
 			err_msg = fmt.Sprintf("commit index=%v server=%v %v != server=%v %v",
 				m.CommandIndex, i, m.Command, j, old)
@@ -356,7 +355,7 @@ func (cfg *config) cleanup() {
 
 // attach server i to the net.
 func (cfg *config) connect(i int) {
-	DPrintf("%d 已连接\n", i)
+	// DPrintf("%d 已连接\n", i)
 
 	cfg.connected[i] = true
 
@@ -379,7 +378,7 @@ func (cfg *config) connect(i int) {
 
 // detach server i from the net.
 func (cfg *config) disconnect(i int) {
-	DPrintf("%d 已断开\n", i)
+	// DPrintf("%d 已断开\n", i)
 
 	cfg.connected[i] = false
 

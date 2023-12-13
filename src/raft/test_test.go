@@ -550,7 +550,6 @@ func TestBackup2B(t *testing.T) {
 	cfg.connect((leader1 + 0) % servers)
 	cfg.connect((leader1 + 1) % servers)
 	cfg.connect(other)
-	fmt.Printf("1111111113\n")
 
 	// lots of successful commands to new group.
 	for i := 0; i < 50; i++ {
