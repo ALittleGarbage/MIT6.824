@@ -17,7 +17,7 @@ const (
 )
 
 const (
-	AppendEntriesTime = time.Millisecond * 50
+	AppendEntriesTime = time.Millisecond * 100
 	HeartbeatTimeout  = time.Second
 )
 
@@ -126,7 +126,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := rf.getLastLog().Index + 1
 	term := rf.currentTerm
 
-	DPrintf("leader %d 收到命令 index：%d\n", rf.me, index)
+	DPrintf("leader %d term：%d 收到命令：%v\n", rf.me, rf.currentTerm, command)
 	entry := LogEntry{Index: index, Term: term, Command: command}
 	rf.logs = append(rf.logs, entry)
 
@@ -187,6 +187,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
+	go rf.apply()
+
 	return rf
 }
 
@@ -240,7 +242,7 @@ func (rf *Raft) executeVote(serverId int, vote *int, becomeLeader *sync.Once, re
 	*vote++
 	if *vote > len(rf.peers)/2 && rf.currentTerm == req.Term && rf.status != Leader {
 		becomeLeader.Do(func() { // 仅执行一次成为leader操作
-			DPrintf("%d超过多数 vote:%d，成为leader\n", rf.me, *vote)
+			DPrintf("%d超过多数 term：%d vote:%d，成为leader\n", rf.me, rf.currentTerm, *vote)
 			rf.status = Leader // 将自身设置为leader
 			lastLog := rf.getLastLog()
 			for i := range rf.peers { // 初始化follower的日志索引
@@ -257,9 +259,8 @@ func (rf *Raft) startAppendEntries() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	//DPrintf("%d 开始同步日志\n", rf.me)
 	lastLog := rf.getLastLog()
-	committed := 1
-	flag := false
 	for i := range rf.peers {
 		if i == rf.me {
 			continue
@@ -280,52 +281,77 @@ func (rf *Raft) startAppendEntries() {
 			Entries:      rf.logs[nextIndex:],
 			LeaderCommit: rf.commitIndex,
 		}
-
-		go rf.executeAppendEntries(i, &committed, &flag, &req)
+		// 立即发送心跳，镇压
+		go rf.executeAppendEntries(i, &req)
 	}
 }
 
-func (rf *Raft) executeAppendEntries(serverId int, committed *int, flag *bool, req *AppendEntriesArgs) {
+func (rf *Raft) executeAppendEntries(serverId int, req *AppendEntriesArgs) {
 	reply := AppendEntriesReply{}
 	ok := rf.sendAppendEntries(serverId, req, &reply)
-	if !ok { // 心跳失败
+	if !ok { // 发送失败
 		return
 	}
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	// 自己的term小于响应的任期，变成follower
 	if rf.currentTerm < reply.Term {
 		rf.currentTerm = reply.Term
+		rf.status = Follower
 		return
 	}
 	if req.Term == rf.currentTerm {
-		if reply.Success {
+		if !reply.Success { // 更新失败的情况
+			rf.nextIndex[serverId] = reply.NextIndex
+			return
+		} else { // 更新成功的情况
 			match := req.PrevLogIndex + len(req.Entries)
 			next := match + 1
 			rf.nextIndex[serverId] = MaxInt(rf.nextIndex[serverId], next)
 			rf.matchIndex[serverId] = MaxInt(rf.matchIndex[serverId], match)
-		} else {
-			rf.nextIndex[serverId] = reply.NextIndex
 		}
-		go rf.commitLog()
+		rf.leaderCommitLog()
 	}
 }
 
-func (rf *Raft) commitLog() {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	if rf.commitIndex > rf.lastApplied && rf.getLastLog().Index > rf.lastApplied {
-		rf.lastApplied++
-		entry := rf.logs[rf.lastApplied]
-		applyMsg := ApplyMsg{
-			CommandValid: true,
-			Command:      entry.Command,
-			CommandIndex: entry.Index,
+func (rf *Raft) leaderCommitLog() {
+	for idx := rf.commitIndex + 1; idx <= rf.getLastLog().Index; idx++ {
+		if rf.logs[idx].Term != rf.currentTerm {
+			continue
 		}
-		rf.applyCh <- applyMsg
-		DPrintf("%d 已提交 %d\n", rf.me, entry.Index)
+		counter := 1
+		for i := range rf.peers {
+			if i != rf.me && rf.matchIndex[i] >= idx {
+				counter++
+			}
+			if counter > len(rf.peers)/2 {
+				rf.commitIndex = idx
+				break
+			}
+		}
 	}
+}
+
+func (rf *Raft) apply() {
+	for !rf.killed() {
+		rf.mu.Lock()
+		//DPrintf("%d 开始提交日志 commitIndex：%d lastApplied：%d\n", rf.me, rf.commitIndex, rf.lastApplied)
+		if rf.commitIndex > rf.lastApplied && rf.getLastLog().Index > rf.lastApplied {
+			rf.lastApplied++
+			entry := rf.logs[rf.lastApplied]
+			applyMsg := ApplyMsg{
+				CommandValid: true,
+				Command:      entry.Command,
+				CommandIndex: entry.Index,
+			}
+			rf.applyCh <- applyMsg
+			DPrintf("%d 已提交命令 %d\n", rf.me, entry.Command)
+		}
+		rf.mu.Unlock()
+		time.Sleep(time.Millisecond * 100)
+	}
+
 }
 
 func (rf *Raft) getLastLog() LogEntry {

@@ -77,6 +77,7 @@ func (rf *Raft) handlerVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 // AppendEntries HeartBeat handler
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	//DPrintf("%d 接收到 %d 的日志\n", rf.me, args.LeaderId)
 	rf.handlerAppendEntries(args, reply)
 }
 
@@ -84,6 +85,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 func (rf *Raft) handlerAppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+
+	if len(args.Entries) != 0 {
+		DPrintf("%d 接收到日志：%d\n", rf.me, args.Entries)
+	}
 
 	reply.Success = false
 	reply.Term = rf.currentTerm
@@ -98,7 +103,7 @@ func (rf *Raft) handlerAppendEntries(args *AppendEntriesArgs, reply *AppendEntri
 		return
 	}
 
-	// 重置选举时间
+	// 重置心跳时间
 	rf.restHeartBeat()
 	rf.status = Follower
 
@@ -118,19 +123,19 @@ func (rf *Raft) handlerAppendEntries(args *AppendEntriesArgs, reply *AppendEntri
 		}
 		return
 	}
-	// 找到第一个不存在的log，添加后面的
-	for index, entry := range args.Entries {
+	// 同步日志 todo
+	for idx, entry := range args.Entries {
 		if entry.Index > rf.getLastLog().Index {
-			rf.logs = append(rf.logs, args.Entries[index:]...)
+			rf.logs = append(rf.logs, args.Entries[idx:]...)
 			break
 		}
 	}
+
 	reply.NextIndex = len(rf.logs)
 	reply.Success = true
-
 	// 提交日志
 	if args.LeaderCommit > rf.commitIndex {
+		// 获取到已提交的日志索引和自己目前最大索引中的最小的那个
 		rf.commitIndex = MinInt(args.LeaderCommit, rf.getLastLog().Index)
-		go rf.commitLog()
 	}
 }
