@@ -123,7 +123,7 @@ func (rf *Raft) handlerAppendEntries(args *AppendEntriesArgs, reply *AppendEntri
 		}
 		return
 	}
-	// 同步日志 todo
+	// 同步日志  todo
 	for idx, entry := range args.Entries {
 		if entry.Index > rf.getLastLog().Index {
 			rf.logs = append(rf.logs, args.Entries[idx:]...)
