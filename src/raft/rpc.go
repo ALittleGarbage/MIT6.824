@@ -73,6 +73,7 @@ func (rf *Raft) handlerVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = false
 	}
 	reply.Term = rf.currentTerm
+	rf.persist()
 }
 
 // AppendEntries HeartBeat handler
@@ -92,6 +93,7 @@ func (rf *Raft) handlerAppendEntries(args *AppendEntriesArgs, reply *AppendEntri
 	// 请求的term大于自己的term，改为请求的term
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
+		rf.persist()
 	}
 	// 如果请求term小于自己的term，丢弃直接返回
 	if args.Term < rf.currentTerm {
@@ -123,8 +125,8 @@ func (rf *Raft) handlerAppendEntries(args *AppendEntriesArgs, reply *AppendEntri
 		entry := args.Entries[0]
 		rf.logs = rf.logs[:entry.Index]
 		rf.logs = append(rf.logs, args.Entries...)
+		rf.persist()
 	}
-
 	reply.NextIndex = len(rf.logs)
 	reply.Success = true
 	// 提交日志

@@ -1,6 +1,8 @@
 package raft
 
 import (
+	"6.5840/labgob"
+	"bytes"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -17,7 +19,7 @@ const (
 )
 
 const (
-	AppendEntriesTime = time.Millisecond * 100
+	AppendEntriesTime = time.Millisecond * 50
 	HeartbeatTimeout  = time.Second
 )
 
@@ -78,35 +80,36 @@ func (rf *Raft) GetState() (int, bool) {
 	return term, isLeader
 }
 
+// persist 持久化日志
 func (rf *Raft) persist() {
-	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// raftstate := w.Bytes()
-	// rf.persister.Save(raftstate, nil)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	if e.Encode(&rf.currentTerm) != nil || e.Encode(&rf.votedFor) != nil || e.Encode(&rf.logs) != nil {
+		DPrintf("%d 持久化日志失败\n", rf.me)
+	}
+	raftstate := w.Bytes()
+	rf.persister.Save(raftstate, nil)
 }
 
-// restore previously persisted state.
+// readPersist 读取日志
 func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
-	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm, voteFor int
+	var logs []LogEntry
+	if d.Decode(&currentTerm) != nil || d.Decode(&voteFor) != nil || d.Decode(&logs) != nil {
+		DPrintf("%d 读取日志失败\n", rf.me)
+	} else {
+		rf.currentTerm = currentTerm
+		rf.votedFor = voteFor
+		rf.logs = make([]LogEntry, len(logs))
+		copy(rf.logs, logs)
+
+	}
 }
 
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
@@ -126,7 +129,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := rf.getLastLog().Index + 1
 	term := rf.currentTerm
 
-	DPrintf("leader %d term：%d 收到命令：%v\n", rf.me, rf.currentTerm, command)
 	entry := LogEntry{Index: index, Term: term, Command: command}
 	rf.logs = append(rf.logs, entry)
 
@@ -185,7 +187,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-
 	// start ticker goroutine to start elections
 	go rf.ticker()
 	go rf.apply()
@@ -218,6 +219,7 @@ func (rf *Raft) startVote() {
 		}
 		go rf.executeVote(i, &vote, &becomeLeader, &req)
 	}
+	rf.persist()
 }
 
 // executeVote 处理某个节点投票的响应
@@ -230,8 +232,10 @@ func (rf *Raft) executeVote(serverId int, vote *int, becomeLeader *sync.Once, re
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+
 	if req.Term < reply.Term {
 		rf.currentTerm = reply.Term
+		rf.persist()
 		return
 	}
 	if req.Term > reply.Term {
@@ -297,10 +301,12 @@ func (rf *Raft) executeAppendEntries(serverId int, req *AppendEntriesArgs) {
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+
 	// 自己的term小于响应的任期，变成follower
 	if rf.currentTerm < reply.Term {
 		rf.currentTerm = reply.Term
 		rf.status = Follower
+		rf.persist()
 		return
 	}
 	if req.Term == rf.currentTerm {
@@ -330,6 +336,7 @@ func (rf *Raft) leaderCommitLog() {
 			}
 			if counter > len(rf.peers)/2 {
 				rf.commitIndex = idx
+				rf.persist()
 				break
 			}
 		}
