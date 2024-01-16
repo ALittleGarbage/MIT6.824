@@ -22,9 +22,11 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term      int
-	Success   bool
-	NextIndex int
+	Term          int
+	Success       bool
+	ConflictTerm  int
+	ConflictIndex int
+	NextIndex     int
 }
 
 // sendRequestVote 发送拉票请求

@@ -7,10 +7,11 @@ func (rf *Raft) startVote() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	rf.status = Candidate // 成为candidate，先把票投给自己
-	rf.currentTerm++      // 任期+1
+	rf.state = Candidate // 成为candidate，先把票投给自己
+	rf.currentTerm++     // 任期+1
 	term := rf.currentTerm
 	rf.votedFor = rf.me // 投给自己
+	rf.persist()
 	rf.restElectionTime()
 	vote := 1 // 投票数+1
 	becomeLeader := sync.Once{}
@@ -27,7 +28,6 @@ func (rf *Raft) startVote() {
 		}
 		go rf.executeVote(i, &vote, &becomeLeader, &req)
 	}
-	rf.persist()
 }
 
 // executeVote 处理某个节点投票的响应
@@ -41,11 +41,16 @@ func (rf *Raft) executeVote(serverId int, vote *int, becomeLeader *sync.Once, re
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	// 请求的时term小于响应的term，变为follower
 	if req.Term < reply.Term {
+		rf.state = Follower
 		rf.currentTerm = reply.Term
+		rf.votedFor = -1
+		DPrintf("[%d]: set term %v\n", rf.me, rf.currentTerm)
 		rf.persist()
 		return
 	}
+	// 已经失效
 	if req.Term > reply.Term {
 		return
 	}
@@ -54,10 +59,10 @@ func (rf *Raft) executeVote(serverId int, vote *int, becomeLeader *sync.Once, re
 		return
 	}
 	*vote++
-	if *vote > len(rf.peers)/2 && rf.currentTerm == req.Term && rf.status != Leader {
+	if *vote > len(rf.peers)/2 && rf.currentTerm == req.Term && rf.state == Candidate {
 		becomeLeader.Do(func() { // 仅执行一次成为leader操作
 			DPrintf("%d超过多数 term：%d vote:%d，成为leader\n", rf.me, rf.currentTerm, *vote)
-			rf.status = Leader // 将自身设置为leader
+			rf.state = Leader // 将自身设置为leader
 			lastLog := rf.getLastLog()
 			for i := range rf.peers { // 初始化follower的日志索引
 				rf.nextIndex[i] = lastLog.Index + 1
@@ -76,6 +81,7 @@ func (rf *Raft) startAppendEntries() {
 	lastLog := rf.getLastLog()
 	for i := range rf.peers {
 		if i == rf.me {
+			rf.restElectionTime()
 			continue
 		}
 		nextIndex := rf.nextIndex[i]
@@ -112,27 +118,49 @@ func (rf *Raft) executeAppendEntries(serverId int, req *AppendEntriesArgs) {
 
 	// 自己的term小于响应的任期，变成follower
 	if rf.currentTerm < reply.Term {
+		rf.state = Follower
 		rf.currentTerm = reply.Term
-		rf.status = Follower
+		rf.votedFor = -1
 		rf.persist()
 		return
 	}
 	if req.Term == rf.currentTerm {
-		if !reply.Success { // 更新失败的情况
-			rf.nextIndex[serverId] = reply.NextIndex
-			return
-		} else { // 更新成功的情况
+		if reply.Success {
 			match := req.PrevLogIndex + len(req.Entries)
 			next := match + 1
 			rf.nextIndex[serverId] = MaxInt(rf.nextIndex[serverId], next)
 			rf.matchIndex[serverId] = MaxInt(rf.matchIndex[serverId], match)
+		} else {
+			if reply.ConflictTerm == -1 {
+				rf.nextIndex[serverId] = reply.NextIndex
+			} else {
+				index := -1
+				for i := rf.getLastLog().Index; i > 0; i-- {
+					term := rf.logs[i].Term
+					if term == reply.ConflictTerm {
+						index = i
+					} else if term < reply.ConflictTerm {
+						break
+					}
+				}
+				if index > 0 {
+					rf.nextIndex[serverId] = index
+				} else {
+					rf.nextIndex[serverId] = reply.ConflictIndex
+				}
+			}
 		}
+
 		rf.leaderCommitLog()
 	}
 }
 
 // leaderCommitLog leader更新可以提交的日志
 func (rf *Raft) leaderCommitLog() {
+	if rf.state != Leader {
+		return
+	}
+
 	for idx := rf.commitIndex + 1; idx <= rf.getLastLog().Index; idx++ {
 		if rf.logs[idx].Term != rf.currentTerm {
 			continue

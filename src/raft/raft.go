@@ -61,7 +61,7 @@ type Raft struct {
 	applyCh       chan ApplyMsg
 	lastHeartBeat time.Time // 最后一次心跳时间
 	electionTime  time.Time
-	status        int // 节点类型
+	state         int // 节点类型
 	currentTerm   int // 任期
 	votedFor      int // 投票的候选者id
 	logs          []LogEntry
@@ -76,7 +76,7 @@ func (rf *Raft) GetState() (int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	term, isLeader := rf.currentTerm, rf.status == Leader
+	term, isLeader := rf.currentTerm, rf.state == Leader
 	return term, isLeader
 }
 
@@ -122,7 +122,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if rf.status != Leader {
+	if rf.state != Leader {
 		return -1, rf.currentTerm, false
 	}
 
@@ -150,10 +150,10 @@ func (rf *Raft) killed() bool {
 // ticker 选举或者发送心跳日志
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
-		if rf.status == Leader {
+		if rf.state == Leader {
 			rf.startAppendEntries()
 		}
-		if rf.status != Leader && rf.isElectionTimeout() && rf.isHeartTimeout() {
+		if rf.state != Leader && rf.isElectionTimeout() && rf.isHeartTimeout() {
 			rf.startVote()
 		}
 		time.Sleep(AppendEntriesTime)
@@ -172,7 +172,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		dead:         0,
 		applyCh:      applyCh,
 		electionTime: time.Now(),
-		status:       Follower,
+		state:        Follower,
 		currentTerm:  0,
 		votedFor:     -1,
 		logs:         make([]LogEntry, 0),
