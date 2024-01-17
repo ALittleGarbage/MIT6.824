@@ -44,7 +44,7 @@ type config struct {
 	net         *labrpc.Network
 	n           int
 	rafts       []*Raft
-	applyErr    []string // from apply channel readers
+	applyErr    []string // from applyLog channel readers
 	connected   []bool   // whether each server is on the net
 	saved       []*Persister
 	endnames    [][]string            // the port file names each sends to
@@ -157,7 +157,7 @@ func (cfg *config) checkLogs(i int, m ApplyMsg) (string, bool) {
 	return err_msg, prevok
 }
 
-// applier reads message from apply ch and checks that they match the log
+// applier reads message from applyLog ch and checks that they match the log
 // contents
 func (cfg *config) applier(i int, applyCh chan ApplyMsg) {
 	for m := range applyCh {
@@ -168,10 +168,10 @@ func (cfg *config) applier(i int, applyCh chan ApplyMsg) {
 			err_msg, prevok := cfg.checkLogs(i, m)
 			cfg.mu.Unlock()
 			if m.CommandIndex > 1 && prevok == false {
-				err_msg = fmt.Sprintf("server %v apply out of order %v", i, m.CommandIndex)
+				err_msg = fmt.Sprintf("server %v applyLog out of order %v", i, m.CommandIndex)
 			}
 			if err_msg != "" {
-				log.Fatalf("apply error: %v", err_msg)
+				log.Fatalf("applyLog error: %v", err_msg)
 				cfg.applyErr[i] = err_msg
 				// keep reading after error so that Raft doesn't block
 				// holding locks...
@@ -226,7 +226,7 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 			cfg.mu.Unlock()
 		} else if m.CommandValid {
 			if m.CommandIndex != cfg.lastApplied[i]+1 {
-				err_msg = fmt.Sprintf("server %v apply out of order, expected index %v, got %v", i, cfg.lastApplied[i]+1, m.CommandIndex)
+				err_msg = fmt.Sprintf("server %v applyLog out of order, expected index %v, got %v", i, cfg.lastApplied[i]+1, m.CommandIndex)
 			}
 
 			if err_msg == "" {
@@ -235,7 +235,7 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 				err_msg, prevok = cfg.checkLogs(i, m)
 				cfg.mu.Unlock()
 				if m.CommandIndex > 1 && prevok == false {
-					err_msg = fmt.Sprintf("server %v apply out of order %v", i, m.CommandIndex)
+					err_msg = fmt.Sprintf("server %v applyLog out of order %v", i, m.CommandIndex)
 				}
 			}
 
@@ -258,7 +258,7 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 			// Ignore other types of ApplyMsg.
 		}
 		if err_msg != "" {
-			log.Fatalf("apply error: %v", err_msg)
+			log.Fatalf("applyLog error: %v", err_msg)
 			cfg.applyErr[i] = err_msg
 			// keep reading after error so that Raft doesn't block
 			// holding locks...

@@ -57,17 +57,24 @@ type Raft struct {
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
 
-	applyCh       chan ApplyMsg
+	applyCh chan ApplyMsg
+
 	lastHeartBeat time.Time // 最后一次心跳时间
 	electionTime  time.Time
-	state         int // 节点类型
-	currentTerm   int // 任期
-	votedFor      int // 投票的候选者id
-	logs          []LogEntry
-	commitIndex   int
-	lastApplied   int
-	nextIndex     []int
-	matchIndex    []int
+
+	state       int // 节点类型
+	currentTerm int // 任期
+	votedFor    int // 投票的候选者id
+	logs        []LogEntry
+
+	commitIndex int
+	lastApplied int
+
+	nextIndex  []int
+	matchIndex []int
+
+	lastIncludeIndex int
+	lastIncludeTerm  int
 }
 
 // GetState 返回 任期 和 isLeader
@@ -79,11 +86,15 @@ func (rf *Raft) GetState() (int, bool) {
 	return term, isLeader
 }
 
-// persist 持久化日志
+// persist 持久化节点状态
 func (rf *Raft) persist() {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
-	if e.Encode(&rf.currentTerm) != nil || e.Encode(&rf.votedFor) != nil || e.Encode(&rf.logs) != nil {
+	if e.Encode(&rf.currentTerm) != nil ||
+		e.Encode(&rf.votedFor) != nil ||
+		e.Encode(&rf.logs) != nil ||
+		e.Encode(&rf.lastIncludeIndex) != nil ||
+		e.Encode(&rf.lastIncludeTerm) != nil {
 		DPrintf("%d 持久化日志失败\n", rf.me)
 	}
 	raftstate := w.Bytes()
@@ -98,22 +109,36 @@ func (rf *Raft) readPersist(data []byte) {
 
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
-	var currentTerm, voteFor int
-	var logs []LogEntry
-	if d.Decode(&currentTerm) != nil || d.Decode(&voteFor) != nil || d.Decode(&logs) != nil {
+	if d.Decode(&rf.currentTerm) != nil ||
+		d.Decode(&rf.votedFor) != nil ||
+		d.Decode(&rf.logs) != nil ||
+		d.Decode(&rf.lastIncludeIndex) != nil ||
+		d.Decode(&rf.lastIncludeTerm) != nil {
 		DPrintf("%d 读取日志失败\n", rf.me)
-	} else {
-		rf.currentTerm = currentTerm
-		rf.votedFor = voteFor
-		rf.logs = make([]LogEntry, len(logs))
-		copy(rf.logs, logs)
-
 	}
 }
 
+// Snapshot 安装快照数据，同时更新快照下标
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (2D).
+	if rf.killed() {
+		return
+	}
 
+	// index小于上一次快照下标，直接返回
+	if rf.lastIncludeIndex >= index || index > rf.commitIndex {
+		return
+	}
+
+	for idx, l := range rf.logs {
+		if l.Index == index {
+			rf.lastIncludeIndex = index
+			rf.lastIncludeTerm = l.Term
+			// 这样做，添加一个默认log，防止越界
+			temp := make([]LogEntry, 1)
+			rf.logs = append(temp, rf.logs[idx+1:]...)
+		}
+	}
+	rf.persister.Save(nil, snapshot)
 }
 
 // Start 由客户端调用用来添加新的命令到本地日志中，leader将其复制到集群中其他节点上
@@ -163,28 +188,29 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	size := len(peers)
 	rf := &Raft{
-		mu:           sync.Mutex{},
-		peers:        peers,
-		persister:    persister,
-		me:           me,
-		dead:         0,
-		applyCh:      applyCh,
-		electionTime: time.Now(),
-		state:        Follower,
-		currentTerm:  0,
-		votedFor:     -1,
-		logs:         make([]LogEntry, 0),
-		commitIndex:  0,
-		lastApplied:  0,
-		nextIndex:    make([]int, size),
-		matchIndex:   make([]int, size),
+		mu:               sync.Mutex{},
+		peers:            peers,
+		persister:        persister,
+		me:               me,
+		dead:             0,
+		applyCh:          applyCh,
+		lastHeartBeat:    time.Now(),
+		electionTime:     time.Now(),
+		state:            Follower,
+		currentTerm:      0,
+		votedFor:         -1,
+		logs:             make([]LogEntry, 1), // 初始化添加一个默认空命令
+		commitIndex:      0,
+		lastApplied:      0,
+		nextIndex:        make([]int, size),
+		matchIndex:       make([]int, size),
+		lastIncludeIndex: 0,
+		lastIncludeTerm:  0,
 	}
-	// 初始化一个默认空命令
-	rf.logs = append(rf.logs, LogEntry{0, 0, nil})
 
 	rf.readPersist(persister.ReadRaftState())
 	go rf.ticker()
-	go rf.apply()
+	go rf.applyLog()
 
 	return rf
 }
@@ -209,8 +235,8 @@ func (rf *Raft) leaderCommitLog() {
 	}
 }
 
-// apply 执行提交操作
-func (rf *Raft) apply() {
+// applyLog 日志提交到应用层
+func (rf *Raft) applyLog() {
 	for !rf.killed() {
 		rf.mu.Lock()
 		if rf.commitIndex > rf.lastApplied && rf.getLastLog().Index > rf.lastApplied {
@@ -227,6 +253,19 @@ func (rf *Raft) apply() {
 		rf.mu.Unlock()
 		time.Sleep(time.Millisecond * 5)
 	}
+}
+
+// applySnapshot 快照同步到应用层
+func (rf *Raft) applySnapshot() {
+	applyMsg := ApplyMsg{
+		SnapshotValid: true,
+		Snapshot:      rf.persister.ReadSnapshot(),
+		SnapshotTerm:  rf.lastIncludeTerm,
+		SnapshotIndex: rf.lastIncludeIndex,
+	}
+	// 已经将快照同步，更新提交进度
+	rf.lastApplied = rf.lastIncludeIndex
+	rf.applyCh <- applyMsg
 }
 
 // getLastLog 获取最后一个日志

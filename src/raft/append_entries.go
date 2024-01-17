@@ -11,6 +11,10 @@ func (rf *Raft) startAppendEntries() {
 			rf.restElectionTime()
 			continue
 		}
+		//if rf.nextIndex[i] <= rf.lastIncludeIndex {
+		//	rf.executeInstallSnapshot(i)
+		//}
+
 		nextIndex := rf.nextIndex[i]
 		if nextIndex <= 0 {
 			nextIndex = 1
@@ -33,9 +37,9 @@ func (rf *Raft) startAppendEntries() {
 }
 
 // executeAppendEntries 处理某个节点的日志响应
-func (rf *Raft) executeAppendEntries(serverId int, req *AppendEntriesArgs) {
+func (rf *Raft) executeAppendEntries(serverId int, args *AppendEntriesArgs) {
 	reply := AppendEntriesReply{}
-	ok := rf.sendAppendEntries(serverId, req, &reply)
+	ok := rf.sendAppendEntries(serverId, args, &reply)
 	if !ok { // 发送失败
 		return
 	}
@@ -51,9 +55,9 @@ func (rf *Raft) executeAppendEntries(serverId int, req *AppendEntriesArgs) {
 		rf.persist()
 		return
 	}
-	if req.Term == rf.currentTerm {
+	if args.Term == rf.currentTerm {
 		if reply.Success {
-			match := req.PrevLogIndex + len(req.Entries)
+			match := args.PrevLogIndex + len(args.Entries)
 			next := match + 1
 			rf.nextIndex[serverId] = MaxInt(rf.nextIndex[serverId], next)
 			rf.matchIndex[serverId] = MaxInt(rf.matchIndex[serverId], match)
