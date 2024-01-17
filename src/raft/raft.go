@@ -131,7 +131,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	entry := LogEntry{Index: index, Term: term, Command: command}
 	rf.logs = append(rf.logs, entry)
-
+	DPrintf("leader:%d 收到命令 index:%d cmd:%v\n", rf.me, index, command)
 	return index, term, true
 }
 

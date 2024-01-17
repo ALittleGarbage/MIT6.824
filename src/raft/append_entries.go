@@ -5,6 +5,10 @@ func (rf *Raft) startAppendEntries() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	if rf.state != Leader {
+		return
+	}
+
 	lastLog := rf.getLastLog()
 	for i := range rf.peers {
 		if i == rf.me {
@@ -27,7 +31,7 @@ func (rf *Raft) startAppendEntries() {
 			Entries:      rf.logs[nextIndex:],
 			LeaderCommit: rf.commitIndex,
 		}
-		// 立即发送心跳，镇压
+		// 发送心跳以及日志
 		go rf.executeAppendEntries(i, &req)
 	}
 }
