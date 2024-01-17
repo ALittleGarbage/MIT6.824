@@ -5,10 +5,6 @@ func (rf *Raft) startAppendEntries() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if rf.state != Leader {
-		return
-	}
-
 	lastLog := rf.getLastLog()
 	for i := range rf.peers {
 		if i == rf.me {
@@ -65,7 +61,7 @@ func (rf *Raft) executeAppendEntries(serverId int, req *AppendEntriesArgs) {
 			if reply.ConflictTerm == -1 {
 				rf.nextIndex[serverId] = reply.NextIndex
 			} else {
-				index := -1
+				index := reply.ConflictIndex
 				for i := rf.getLastLog().Index; i > 0; i-- {
 					term := rf.logs[i].Term
 					if term == reply.ConflictTerm {
@@ -74,11 +70,7 @@ func (rf *Raft) executeAppendEntries(serverId int, req *AppendEntriesArgs) {
 						break
 					}
 				}
-				if index > 0 {
-					rf.nextIndex[serverId] = index
-				} else {
-					rf.nextIndex[serverId] = reply.ConflictIndex
-				}
+				rf.nextIndex[serverId] = index
 			}
 		}
 
@@ -141,6 +133,7 @@ func (rf *Raft) handlerAppendEntries(args *AppendEntriesArgs, reply *AppendEntri
 		rf.logs = append(rf.logs, args.Entries...)
 		rf.persist()
 	}
+
 	// 提交日志
 	if args.LeaderCommit > rf.commitIndex {
 		// 获取到已提交的日志索引和自己目前最大索引中的最小的那个

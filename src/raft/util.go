@@ -26,3 +26,13 @@ func MinInt(left int, right int) int {
 	}
 	return right
 }
+
+func GetCmd(logs []LogEntry) []interface{} {
+	cmds := make([]interface{}, len(logs))
+
+	for i, l := range logs {
+		cmds[i] = l.Command
+	}
+
+	return cmds
+}

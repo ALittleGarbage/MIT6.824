@@ -7,16 +7,12 @@ func (rf *Raft) startVote() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if rf.state == Leader {
-		return
-	}
-
+	rf.restElectionTime()
 	rf.state = Candidate // 成为candidate，先把票投给自己
 	rf.currentTerm++     // 任期+1
 	term := rf.currentTerm
 	rf.votedFor = rf.me // 投给自己
 	rf.persist()
-	rf.restElectionTime()
 	vote := 1 // 投票数+1
 	becomeLeader := sync.Once{}
 	lastLog := rf.getLastLog()
@@ -104,7 +100,7 @@ func (rf *Raft) handlerVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = true
 		rf.persist()
 		rf.restElectionTime()
-		// DPrintf("%d 投给了 %d\n", rf.me, args.CandidateId)
+		DPrintf("%d 投给了 %d\n", rf.me, args.CandidateId)
 	} else { //拒绝投票
 		reply.VoteGranted = false
 	}

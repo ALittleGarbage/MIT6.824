@@ -131,7 +131,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	entry := LogEntry{Index: index, Term: term, Command: command}
 	rf.logs = append(rf.logs, entry)
-	DPrintf("leader:%d 收到命令 index:%d cmd:%v\n", rf.me, index, command)
+	DPrintf("leader:%d 收到命令cmd:%v index:%d\n", rf.me, command, index)
 	return index, term, true
 }
 
@@ -196,11 +196,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 // leaderCommitLog leader更新可以提交的日志
 func (rf *Raft) leaderCommitLog() {
-	if rf.state != Leader {
-		return
-	}
-
-	for idx := rf.commitIndex + 1; idx <= rf.getLastLog().Index; idx++ {
+	for idx := rf.commitIndex; idx <= rf.getLastLog().Index; idx++ {
 		if rf.logs[idx].Term != rf.currentTerm {
 			continue
 		}
@@ -231,10 +227,10 @@ func (rf *Raft) apply() {
 				CommandIndex: entry.Index,
 			}
 			rf.applyCh <- applyMsg
-			DPrintf("%d 已提交命令 %d\n", rf.me, entry.Command)
+			DPrintf("节点:%d 提交命令 index:%d cmd:%v\n", rf.me, entry.Index, entry.Command)
 		}
 		rf.mu.Unlock()
-		time.Sleep(time.Millisecond * 100)
+		time.Sleep(time.Millisecond * 5)
 	}
 }
 
