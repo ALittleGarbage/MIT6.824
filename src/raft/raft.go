@@ -57,7 +57,6 @@ type Raft struct {
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
 
-	// Your data here (2A, 2B, 2C).
 	applyCh       chan ApplyMsg
 	lastHeartBeat time.Time // 最后一次心跳时间
 	electionTime  time.Time
@@ -137,9 +136,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 // Kill 自杀
 func (rf *Raft) Kill() {
-	DPrintf("%d killed\n", rf.me)
 	atomic.StoreInt32(&rf.dead, 1)
-	// Your code here, if desired.
+	DPrintf("%d killed\n", rf.me)
 }
 
 func (rf *Raft) killed() bool {
@@ -154,7 +152,7 @@ func (rf *Raft) ticker() {
 			rf.startAppendEntries()
 		}
 		if rf.state != Leader && rf.isElectionTimeout() && rf.isHeartTimeout() {
-			rf.startVote()
+			rf.startRequestVote()
 		}
 		time.Sleep(AppendEntriesTime)
 	}
@@ -183,11 +181,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	}
 	// 初始化一个默认空命令
 	rf.logs = append(rf.logs, LogEntry{0, 0, nil})
-	// Your initialization code here (2A, 2B, 2C).
 
-	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-	// start ticker goroutine to start elections
 	go rf.ticker()
 	go rf.apply()
 

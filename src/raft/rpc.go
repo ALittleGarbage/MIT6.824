@@ -29,6 +29,19 @@ type AppendEntriesReply struct {
 	NextIndex     int
 }
 
+type InstallSnapshotArgs struct {
+	Term             int    // 发送请求方的任期
+	LeaderId         int    // 请求方的LeaderId
+	LastIncludeIndex int    // 快照最后applied的日志下标
+	LastIncludeTerm  int    // 快照最后applied时的当前任期
+	Data             []byte // 快照区块的原始字节流数据
+	//Done bool
+}
+
+type InstallSnapshotReply struct {
+	Term int
+}
+
 // sendRequestVote 发送拉票请求
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
@@ -41,12 +54,22 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 
+//
+func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
+	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
+	return ok
+}
+
 // RequestVote Vote handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	rf.handlerVote(args, reply)
+	rf.handleRequestVote(args, reply)
 }
 
 // AppendEntries HeartBeat handler
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	rf.handlerAppendEntries(args, reply)
+	rf.handleAppendEntries(args, reply)
+}
+
+func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+	rf.handleInstallSnapshot(args, reply)
 }

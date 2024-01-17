@@ -78,8 +78,8 @@ func (rf *Raft) executeAppendEntries(serverId int, req *AppendEntriesArgs) {
 	}
 }
 
-// handlerAppendEntries 处理心跳请求，响应Leader
-func (rf *Raft) handlerAppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+// handleAppendEntries 处理心跳请求，响应Leader
+func (rf *Raft) handleAppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 

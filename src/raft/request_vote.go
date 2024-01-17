@@ -2,8 +2,8 @@ package raft
 
 import "sync"
 
-// startVote 参加选举，开始拉票
-func (rf *Raft) startVote() {
+// startRequestVote 参加选举，开始拉票
+func (rf *Raft) startRequestVote() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -16,7 +16,7 @@ func (rf *Raft) startVote() {
 	vote := 1 // 投票数+1
 	becomeLeader := sync.Once{}
 	lastLog := rf.getLastLog()
-	req := RequestVoteArgs{
+	args := RequestVoteArgs{
 		Term:         term,
 		CandidateId:  rf.me,
 		LastLogIndex: lastLog.Index,
@@ -26,14 +26,14 @@ func (rf *Raft) startVote() {
 		if i == rf.me { // 跳过自己
 			continue
 		}
-		go rf.executeVote(i, &vote, &becomeLeader, &req)
+		go rf.executeRequestVote(i, &vote, &becomeLeader, &args)
 	}
 }
 
-// executeVote 处理某个节点投票的响应
-func (rf *Raft) executeVote(serverId int, vote *int, becomeLeader *sync.Once, req *RequestVoteArgs) {
+// executeRequestVote 处理某个节点投票的响应
+func (rf *Raft) executeRequestVote(serverId int, vote *int, becomeLeader *sync.Once, args *RequestVoteArgs) {
 	reply := RequestVoteReply{}
-	ok := rf.sendRequestVote(serverId, req, &reply)
+	ok := rf.sendRequestVote(serverId, args, &reply)
 	if !ok {
 		return
 	}
@@ -42,7 +42,7 @@ func (rf *Raft) executeVote(serverId int, vote *int, becomeLeader *sync.Once, re
 	defer rf.mu.Unlock()
 
 	// 请求的时term小于响应的term，变为follower
-	if req.Term < reply.Term {
+	if args.Term < reply.Term {
 		rf.state = Follower
 		rf.currentTerm = reply.Term
 		rf.votedFor = -1
@@ -50,7 +50,7 @@ func (rf *Raft) executeVote(serverId int, vote *int, becomeLeader *sync.Once, re
 		return
 	}
 	// 已经失效
-	if req.Term > reply.Term {
+	if args.Term > reply.Term {
 		return
 	}
 	// 更新完，term再判断是否投票成功
@@ -58,7 +58,7 @@ func (rf *Raft) executeVote(serverId int, vote *int, becomeLeader *sync.Once, re
 		return
 	}
 	*vote++
-	if *vote > len(rf.peers)/2 && rf.currentTerm == req.Term && rf.state == Candidate {
+	if *vote > len(rf.peers)/2 && rf.currentTerm == args.Term && rf.state == Candidate {
 		becomeLeader.Do(func() { // 仅执行一次成为leader操作
 			DPrintf("%d超过多数 term：%d vote:%d，成为leader\n", rf.me, rf.currentTerm, *vote)
 			rf.state = Leader // 将自身设置为leader
@@ -72,8 +72,8 @@ func (rf *Raft) executeVote(serverId int, vote *int, becomeLeader *sync.Once, re
 	}
 }
 
-// handlerVote 处理选举请求，是否投票，响应Candidate
-func (rf *Raft) handlerVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+// handleRequestVote 处理选举请求，是否投票，响应Candidate
+func (rf *Raft) handleRequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
