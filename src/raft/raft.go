@@ -194,6 +194,30 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	return rf
 }
 
+// leaderCommitLog leader更新可以提交的日志
+func (rf *Raft) leaderCommitLog() {
+	if rf.state != Leader {
+		return
+	}
+
+	for idx := rf.commitIndex + 1; idx <= rf.getLastLog().Index; idx++ {
+		if rf.logs[idx].Term != rf.currentTerm {
+			continue
+		}
+		counter := 1
+		for i := range rf.peers {
+			if i != rf.me && rf.matchIndex[i] >= idx {
+				counter++
+			}
+			if counter > len(rf.peers)/2 {
+				rf.commitIndex = idx
+				rf.persist()
+				break
+			}
+		}
+	}
+}
+
 // apply 执行提交操作
 func (rf *Raft) apply() {
 	for !rf.killed() {
