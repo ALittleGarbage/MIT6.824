@@ -11,9 +11,11 @@ func (rf *Raft) startAppendEntries() {
 			rf.restElectionTime()
 			continue
 		}
-		//if rf.nextIndex[i] <= rf.lastIncludeIndex {
-		//	rf.executeInstallSnapshot(i)
-		//}
+
+		if rf.nextIndex[i] <= rf.lastIncludeIndex {
+			go rf.executeInstallSnapshot(i)
+			continue
+		}
 
 		nextIndex := rf.nextIndex[i]
 		if nextIndex <= 0 {
@@ -22,6 +24,7 @@ func (rf *Raft) startAppendEntries() {
 		if lastLog.Index+1 < nextIndex {
 			nextIndex = lastLog.Index
 		}
+		// todo 越界
 		preLog := rf.logs[nextIndex-1] // 获取上一个日志
 		req := AppendEntriesArgs{
 			Term:         rf.currentTerm,

@@ -118,27 +118,33 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 }
 
-// Snapshot 安装快照数据，同时更新快照下标
+// Snapshot 安装快照数据，同时抛弃快照中的数据（你都安装快照就不需要存储在logs中了）
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	if rf.killed() {
 		return
 	}
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
 	// index小于上一次快照下标，直接返回
 	if rf.lastIncludeIndex >= index || index > rf.commitIndex {
 		return
 	}
 
+	rf.persister.Save(nil, snapshot)
+
 	for idx, l := range rf.logs {
 		if l.Index == index {
-			rf.lastIncludeIndex = index
-			rf.lastIncludeTerm = l.Term
 			// 这样做，添加一个默认log，防止越界
 			temp := make([]LogEntry, 1)
 			rf.logs = append(temp, rf.logs[idx+1:]...)
+			rf.lastIncludeIndex = index
+			rf.lastIncludeTerm = l.Term
+			break
 		}
 	}
-	rf.persister.Save(nil, snapshot)
+	DPrintf("%d 安装完成快照\n", rf.me)
 }
 
 // Start 由客户端调用用来添加新的命令到本地日志中，leader将其复制到集群中其他节点上
@@ -239,15 +245,23 @@ func (rf *Raft) leaderCommitLog() {
 func (rf *Raft) applyLog() {
 	for !rf.killed() {
 		rf.mu.Lock()
-		if rf.commitIndex > rf.lastApplied && rf.getLastLog().Index > rf.lastApplied {
-			rf.lastApplied++
-			entry := rf.logs[rf.lastApplied]
+		for idx, l := range rf.logs {
+			// 超出已提交索引直接退出
+			if l.Index > rf.commitIndex {
+				break
+			}
+			// 已经提交到应用层的直接跳过
+			if l.Index <= rf.lastApplied {
+				continue
+			}
+			entry := rf.logs[idx]
 			applyMsg := ApplyMsg{
 				CommandValid: true,
 				Command:      entry.Command,
 				CommandIndex: entry.Index,
 			}
 			rf.applyCh <- applyMsg
+			rf.lastApplied = idx
 			DPrintf("节点:%d 提交命令 index:%d cmd:%v\n", rf.me, entry.Index, entry.Command)
 		}
 		rf.mu.Unlock()

@@ -1,10 +1,10 @@
 package raft
 
-// startInstallSnapshot 开始向每个节点发送日志快照
+// startInstallSnapshot 开始向每个节点同步日志快照
 func (rf *Raft) startInstallSnapshot() {
 }
 
-// executeInstallSnapshot 处理某个节点的快照响应
+// executeInstallSnapshot 处理某个节点的快照同步
 func (rf *Raft) executeInstallSnapshot(serverId int) {
 	args := InstallSnapshotArgs{
 		Term:             rf.currentTerm,
@@ -45,7 +45,6 @@ func (rf *Raft) handleInstallSnapshot(args *InstallSnapshotArgs, reply *InstallS
 	defer rf.mu.Unlock()
 
 	reply.Term = rf.currentTerm
-
 	// 请求的term大于自己的term，改为请求的term
 	if args.Term > rf.currentTerm {
 		rf.state = Follower
@@ -70,6 +69,28 @@ func (rf *Raft) handleInstallSnapshot(args *InstallSnapshotArgs, reply *InstallS
 		return
 	}
 
-	rf.Snapshot(args.LastIncludeIndex, args.Data)
+	rf.persister.Save(nil, args.Data)
+
+	// 如果节点的最后一个索引都小于快照的最后一个索引，直接清空
+	if rf.getLastLog().Index < args.LastIncludeIndex {
+		// 初始化一个默认的空命令
+		rf.logs = make([]LogEntry, 1)
+	} else {
+		for idx, l := range rf.logs {
+			if l.Index == args.LastIncludeIndex {
+				// 初始化一个默认的空命令
+				temp := make([]LogEntry, 1)
+				rf.logs = append(temp, rf.logs[idx+1:]...)
+				break
+			}
+		}
+	}
+
+	rf.lastIncludeIndex = args.LastIncludeIndex
+	rf.lastIncludeTerm = args.LastIncludeTerm
+
+	// 将快照交付到应用层
+	rf.applySnapshot()
+
 	reply.Term = rf.currentTerm
 }
