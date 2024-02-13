@@ -51,13 +51,14 @@ type LogEntry struct {
 }
 
 type Raft struct {
-	mu        sync.Mutex          // Lock to protect shared access to this peer's state
+	mu        *sync.Mutex         // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
 
-	applyCh chan ApplyMsg
+	applyCh   chan ApplyMsg
+	applyCond *sync.Cond
 
 	lastHeartBeat time.Time // 最后一次心跳时间
 	electionTime  time.Time
@@ -79,7 +80,12 @@ type Raft struct {
 
 // GetState 返回 任期 和 isLeader
 func (rf *Raft) GetState() (int, bool) {
+	GPrintf("%d 开始上锁 %s\n", rf.me, GetFunName())
 	rf.mu.Lock()
+	GPrintf("%d 上锁成功 %s\n", rf.me, GetFunName())
+	defer func() {
+		GPrintf("%d 解锁成功 %s\n", rf.me, GetFunName())
+	}()
 	defer rf.mu.Unlock()
 
 	term, isLeader := rf.currentTerm, rf.state == Leader
@@ -118,13 +124,18 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 }
 
-// Snapshot 安装快照数据，同时抛弃快照中的数据（你都安装快照就不需要存储在logs中了）
+// Snapshot 安装快照数据，同时抛弃已经进行快照的数据（你都安装快照就不需要存储在logs中了）
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	if rf.killed() {
 		return
 	}
 
+	GPrintf("%d 开始上锁 %s\n", rf.me, GetFunName())
 	rf.mu.Lock()
+	GPrintf("%d 上锁成功 %s\n", rf.me, GetFunName())
+	defer func() {
+		GPrintf("%d 解锁成功 %s\n", rf.me, GetFunName())
+	}()
 	defer rf.mu.Unlock()
 
 	// index小于上一次快照下标，直接返回
@@ -134,34 +145,36 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 	rf.persister.Save(nil, snapshot)
 
-	for idx, l := range rf.logs {
-		if l.Index == index {
-			// 这样做，添加一个默认log，防止越界
-			temp := make([]LogEntry, 1)
-			rf.logs = append(temp, rf.logs[idx+1:]...)
-			rf.lastIncludeIndex = index
-			rf.lastIncludeTerm = l.Term
-			break
-		}
-	}
-	DPrintf("%d 安装完成快照\n", rf.me)
+	// 这样做，添加一个默认log，防止越界
+	temp := make([]LogEntry, 1)
+	log := rf.getLogByIndex(index)
+	rf.logs = append(temp, rf.logs[rf.getPosByIndex(index)+1:]...)
+	rf.lastIncludeIndex = index
+	rf.lastIncludeTerm = log.Term
+	rf.persist()
+	DPrintf("%d 创建完成快照(:%d]\n", rf.me, index)
 }
 
 // Start 由客户端调用用来添加新的命令到本地日志中，leader将其复制到集群中其他节点上
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	GPrintf("%d 开始上锁 %s\n", rf.me, GetFunName())
 	rf.mu.Lock()
+	GPrintf("%d 上锁成功 %s\n", rf.me, GetFunName())
+	defer func() {
+		GPrintf("%d 解锁成功 %s\n", rf.me, GetFunName())
+	}()
 	defer rf.mu.Unlock()
 
 	if rf.state != Leader {
 		return -1, rf.currentTerm, false
 	}
 
-	index := rf.getLastLog().Index + 1
+	index := rf.getLastLogIdx() + 1
 	term := rf.currentTerm
 
 	entry := LogEntry{Index: index, Term: term, Command: command}
 	rf.logs = append(rf.logs, entry)
-	DPrintf("leader:%d 收到命令cmd:%v index:%d\n", rf.me, command, index)
+	DPrintf("leader:%d 收到命令 index:%d cmd:%v\n", rf.me, index, command)
 	return index, term, true
 }
 
@@ -193,13 +206,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 
 	size := len(peers)
+	lock := sync.Mutex{}
 	rf := &Raft{
-		mu:               sync.Mutex{},
+		mu:               &lock,
 		peers:            peers,
 		persister:        persister,
 		me:               me,
 		dead:             0,
 		applyCh:          applyCh,
+		applyCond:        sync.NewCond(&lock),
 		lastHeartBeat:    time.Now(),
 		electionTime:     time.Now(),
 		state:            Follower,
@@ -223,8 +238,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 // leaderCommitLog leader更新可以提交的日志
 func (rf *Raft) leaderCommitLog() {
-	for idx := rf.commitIndex; idx <= rf.getLastLog().Index; idx++ {
-		if rf.logs[idx].Term != rf.currentTerm {
+	lastLogIdx := rf.getLastLogIdx()
+	for idx := rf.commitIndex; idx <= lastLogIdx; idx++ {
+		if rf.getLogByIndex(idx).Term != rf.currentTerm {
 			continue
 		}
 		counter := 1
@@ -234,38 +250,47 @@ func (rf *Raft) leaderCommitLog() {
 			}
 			if counter > len(rf.peers)/2 {
 				rf.commitIndex = idx
-				rf.persist()
+				// 开始交付日志
+				rf.apply()
 				break
 			}
 		}
 	}
 }
 
+func (rf *Raft) apply() {
+	// 唤醒阻塞等待的协程
+	rf.applyCond.Broadcast()
+}
+
 // applyLog 日志提交到应用层
 func (rf *Raft) applyLog() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	for !rf.killed() {
-		rf.mu.Lock()
-		for idx, l := range rf.logs {
-			// 超出已提交索引直接退出
-			if l.Index > rf.commitIndex {
-				break
-			}
-			// 已经提交到应用层的直接跳过
-			if l.Index <= rf.lastApplied {
-				continue
-			}
-			entry := rf.logs[idx]
+		// 挂了后从快照恢复后，重新设置lastApplied
+		if rf.lastApplied == 0 {
+			rf.lastApplied = rf.lastIncludeIndex
+		}
+		if rf.lastApplied < rf.commitIndex &&
+			rf.lastApplied < rf.getLastLogIdx() &&
+			rf.getLogByIndex(rf.lastApplied+1).Index != 0 {
+			entry := rf.getLogByIndex(rf.lastApplied + 1)
 			applyMsg := ApplyMsg{
 				CommandValid: true,
 				Command:      entry.Command,
 				CommandIndex: entry.Index,
 			}
+			rf.mu.Unlock()
 			rf.applyCh <- applyMsg
-			rf.lastApplied = idx
+			rf.mu.Lock()
+			rf.lastApplied++
+			rf.persist()
 			DPrintf("节点:%d 提交命令 index:%d cmd:%v\n", rf.me, entry.Index, entry.Command)
+		} else {
+			// 没有可提交的就让出锁并等待阻塞
+			rf.applyCond.Wait()
 		}
-		rf.mu.Unlock()
-		time.Sleep(time.Millisecond * 5)
 	}
 }
 
@@ -279,12 +304,39 @@ func (rf *Raft) applySnapshot() {
 	}
 	// 已经将快照同步，更新提交进度
 	rf.lastApplied = rf.lastIncludeIndex
+	rf.commitIndex = rf.lastIncludeIndex
+	rf.persist()
 	rf.applyCh <- applyMsg
+}
+
+func (rf *Raft) getLastLogIdx() int {
+	idx := rf.getLastLog().Index
+	if idx == 0 {
+		idx += rf.lastIncludeIndex
+	}
+	return idx
 }
 
 // getLastLog 获取最后一个日志
 func (rf *Raft) getLastLog() LogEntry {
 	return rf.logs[len(rf.logs)-1]
+}
+
+// 通过日志的索引找到相应日志的位置
+func (rf *Raft) getPosByIndex(index int) int {
+	if index == 0 {
+		return 0
+	}
+	idx := index - rf.lastIncludeIndex
+	if idx < 0 {
+		idx = 0
+	}
+	return idx
+}
+
+// 通过日志的索引找到相应的日志
+func (rf *Raft) getLogByIndex(index int) LogEntry {
+	return rf.logs[rf.getPosByIndex(index)]
 }
 
 // isHeartTimeout 判断心跳是否超时

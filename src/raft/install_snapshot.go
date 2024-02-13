@@ -1,9 +1,5 @@
 package raft
 
-// startInstallSnapshot 开始向每个节点同步日志快照
-func (rf *Raft) startInstallSnapshot() {
-}
-
 // executeInstallSnapshot 处理某个节点的快照同步
 func (rf *Raft) executeInstallSnapshot(serverId int) {
 	args := InstallSnapshotArgs{
@@ -65,32 +61,27 @@ func (rf *Raft) handleInstallSnapshot(args *InstallSnapshotArgs, reply *InstallS
 	}
 
 	// index小于上一次快照下标，直接返回
-	if rf.lastIncludeIndex >= args.LastIncludeIndex || args.LastIncludeIndex > rf.commitIndex {
+	if rf.lastIncludeIndex >= args.LastIncludeIndex || args.LastIncludeIndex < rf.commitIndex {
 		return
 	}
 
 	rf.persister.Save(nil, args.Data)
 
 	// 如果节点的最后一个索引都小于快照的最后一个索引，直接清空
-	if rf.getLastLog().Index < args.LastIncludeIndex {
+	if rf.getLastLogIdx() < args.LastIncludeIndex {
 		// 初始化一个默认的空命令
 		rf.logs = make([]LogEntry, 1)
 	} else {
-		for idx, l := range rf.logs {
-			if l.Index == args.LastIncludeIndex {
-				// 初始化一个默认的空命令
-				temp := make([]LogEntry, 1)
-				rf.logs = append(temp, rf.logs[idx+1:]...)
-				break
-			}
-		}
+		// 初始化一个默认的空命令
+		temp := make([]LogEntry, 1)
+		rf.logs = append(temp, rf.logs[rf.getPosByIndex(args.LastIncludeIndex+1):]...)
 	}
+
+	DPrintf("节点:%d 收到leader的快照数据 lastIncludeIndex:%d->%d\n", rf.me, rf.lastIncludeIndex, args.LastIncludeIndex)
 
 	rf.lastIncludeIndex = args.LastIncludeIndex
 	rf.lastIncludeTerm = args.LastIncludeTerm
-
 	// 将快照交付到应用层
 	rf.applySnapshot()
-
 	reply.Term = rf.currentTerm
 }

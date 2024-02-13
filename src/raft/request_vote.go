@@ -16,6 +16,14 @@ func (rf *Raft) startRequestVote() {
 	vote := 1 // 投票数+1
 	becomeLeader := sync.Once{}
 	lastLog := rf.getLastLog()
+	// 如果lastLog的index为0，则说明logs中只有一个默认命令，刚刚安装快照，logs被释放了，需要重新获取lastLog
+	if lastLog.Index == 0 && rf.lastIncludeIndex != 0 {
+		lastLog = LogEntry{
+			Index:   rf.lastIncludeIndex,
+			Term:    rf.lastIncludeTerm,
+			Command: nil,
+		}
+	}
 	args := RequestVoteArgs{
 		Term:         term,
 		CandidateId:  rf.me,
@@ -61,10 +69,9 @@ func (rf *Raft) executeRequestVote(serverId int, vote *int, becomeLeader *sync.O
 	if *vote > len(rf.peers)/2 && rf.currentTerm == args.Term && rf.state == Candidate {
 		becomeLeader.Do(func() { // 仅执行一次成为leader操作
 			DPrintf("%d超过多数 term：%d vote:%d，成为leader\n", rf.me, rf.currentTerm, *vote)
-			rf.state = Leader // 将自身设置为leader
-			lastLog := rf.getLastLog()
+			rf.state = Leader         // 将自身设置为leader
 			for i := range rf.peers { // 初始化follower的日志索引
-				rf.nextIndex[i] = lastLog.Index + 1
+				rf.nextIndex[i] = rf.getLastLogIdx() + 1
 				rf.matchIndex[i] = 0
 			}
 			go rf.startAppendEntries() // 成为leader立刻开启心跳
@@ -91,7 +98,15 @@ func (rf *Raft) handleRequestVote(args *RequestVoteArgs, reply *RequestVoteReply
 		return
 	}
 
+	// 如果lastLog的index为0，则说明logs中只有一个默认命令，刚刚安装快照，logs被释放了，需要重新获取lastLog
 	lastLog := rf.getLastLog()
+	if lastLog.Index == 0 && rf.lastIncludeIndex != 0 {
+		lastLog = LogEntry{
+			Index:   rf.lastIncludeIndex,
+			Term:    rf.lastIncludeTerm,
+			Command: nil,
+		}
+	}
 	// 还要判断日志是否日志，对方的日志大于我 或者 如果不大于则判断最后一个日志是否一致
 	judgeLog := args.LastLogTerm > lastLog.Term || (args.LastLogTerm == lastLog.Term && args.LastLogIndex >= lastLog.Index)
 	if judgeLog && (rf.votedFor == -1 || rf.votedFor == args.CandidateId) { // 同意投票
