@@ -268,7 +268,7 @@ func (rf *Raft) applyLog() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	for !rf.killed() {
-		// 挂了后从快照恢复后，重新设置lastApplied
+		// 挂了后从快照恢复后（好像只会恢复快照的数据，快照后提交的数据无法恢复），重新设置lastApplied
 		if rf.lastApplied == 0 {
 			rf.lastApplied = rf.lastIncludeIndex
 		}
